@@ -48,7 +48,7 @@ jobs:
 
       - run: docker build -t myapp:latest .
 
-      - uses: lineaje-actions/lineaje-actions@v1.1.0
+      - uses: lineaje-actions/lineaje-actions@v1
         with:
           scan_type: image
           image: myapp:latest
@@ -65,7 +65,7 @@ jobs:
 ```yaml
 - run: docker build -t myapp:latest .
 
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: image
     image: myapp:latest
@@ -76,7 +76,7 @@ jobs:
 ### Image scan — pull from registry first
 
 ```yaml
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: image
     image: docker.io/library/python:3.8-slim
@@ -88,7 +88,7 @@ jobs:
 ### Image scan — scan only (no fix plan, no Dockerfile needed)
 
 ```yaml
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: image
     image: docker.io/library/python:3.8-slim
@@ -100,7 +100,7 @@ jobs:
 ### Source scan — scan only (Java 17)
 
 ```yaml
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: source
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
@@ -112,7 +112,7 @@ jobs:
 ### Source scan — scan + fix plan (uploads patched manifest)
 
 ```yaml
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: source
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
@@ -124,7 +124,7 @@ jobs:
 ### Source scan — subdirectory (Node.js 18)
 
 ```yaml
-- uses: lineaje-actions/lineaje-actions@v1.1.0
+- uses: lineaje-actions/lineaje-actions@v1
   with:
     scan_type: source
     source_dir: my-service
@@ -153,7 +153,7 @@ jobs:
       # 2. Scan + fix plan → uploads patched Dockerfile artifact
       - name: Lineaje scan + fix plan
         id: scan
-        uses: lineaje-actions/lineaje-actions@v1.1.0
+        uses: lineaje-actions/lineaje-actions@v1
         with:
           scan_type: image
           image: myapp:latest
@@ -175,7 +175,7 @@ jobs:
       # 4. Rescan the patched image to confirm fixes
       - name: Lineaje rescan (patched)
         if: steps.scan.outputs.fix_artifact_uploaded == 'true'
-        uses: lineaje-actions/lineaje-actions@v1.1.0
+        uses: lineaje-actions/lineaje-actions@v1
         with:
           scan_type: image
           image: myapp:latest-patched
@@ -282,7 +282,7 @@ steps:
       username: ${{ secrets.ACR_USERNAME }}
       password: ${{ secrets.ACR_PASSWORD }}
 
-  - uses: lineaje-actions/lineaje-actions@v1.1.0
+  - uses: lineaje-actions/lineaje-actions@v1
     with:
       scan_type: image
       image: myregistry.azurecr.io/myapp:latest

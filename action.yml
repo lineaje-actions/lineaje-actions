@@ -138,7 +138,7 @@ runs:
           exit 0
         fi
 
-        curl -fL https://downloads.prod.veedna.com/eaton/veecli_latest.tar.gz -o veecli.tar.gz
+        curl -fL https://downloads.prod.veedna.com/veecli_latest.tar.gz -o veecli.tar.gz
         tar -xzf veecli.tar.gz
 
         VEECLI_BIN=$(find . -name 'veecli' -not -name '*.tar.gz' -type f | head -1)
