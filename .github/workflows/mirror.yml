@@ -1,0 +1,35 @@
+name: Mirror to public
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: github.repository == 'lineaje-com/lineaje-scan-action'
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to public mirror
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          git config --unset-all http.https://github.com/.extraheader || true
+          git remote add public https://x-access-token:${MIRROR_TOKEN}@github.com/lineaje-actions/lineaje-actions.git
+          git config user.email "mirror-bot@lineaje.com"
+          git config user.name "Mirror Bot"
+          git checkout -b _mirror_tmp
+          git rm --cached .github/workflows/mirror.yml
+          git commit -m "chore: remove mirror workflow"
+          git push public _mirror_tmp:refs/heads/main --force
+          git push public --tags
