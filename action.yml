@@ -16,7 +16,7 @@ name: 'Lineaje Scan'
 description: 'Scan container images and source code for vulnerabilities using Lineaje'
 branding:
   icon: 'shield'
-  color: 'blue'
+  color: 'orange'
 
 inputs:
   # ── Common ──────────────────────────────────────────────────────────────────
