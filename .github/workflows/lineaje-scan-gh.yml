@@ -1,0 +1,85 @@
+# Copyright 2026 Lineaje, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Lineaje Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Scan type: image or source"
+        required: true
+        type: choice
+        options: [image, source]
+      project_name:
+        required: false
+      project_version:
+        required: false
+      org_name:
+        required: false
+      lineaje_cli_token:
+        required: false
+      output_dir:
+        required: false
+        default: "/tmp/lineaje-scan-output"
+      image:
+        required: false
+      metafiles:
+        required: false
+        default: "Dockerfile"
+      image_source_type:
+        required: false
+        default: "daemon"
+        type: choice
+        options: [daemon, registry]
+      source_dir:
+        required: false
+      language:
+        required: false
+        type: choice
+        options: [java, python, node]
+      language_version:
+        required: false
+      matching_ref:
+        required: false
+      post_scan:
+        required: false
+        default: "scan_only"
+        type: choice
+        options: [scan_only, fix_plan]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./
+        with:
+          scan_type:                  ${{ inputs.scan_type }}
+          project_name:               ${{ inputs.project_name }}
+          project_version:            ${{ inputs.project_version }}
+          org_name:                   ${{ inputs.org_name }}
+          lineaje_cli_token:          ${{ inputs.lineaje_cli_token || secrets.LINEAJE_CLI_TOKEN }}
+          output_dir:                 ${{ inputs.output_dir }}
+          image:                      ${{ inputs.image }}
+          metafiles:                  ${{ inputs.metafiles }}
+          image_source_type:          ${{ inputs.image_source_type }}
+          source_dir:                 ${{ inputs.source_dir }}
+          language:                   ${{ inputs.language }}
+          language_version:           ${{ inputs.language_version }}
+          matching_ref:               ${{ inputs.matching_ref }}
+          post_scan:                  ${{ inputs.post_scan }}

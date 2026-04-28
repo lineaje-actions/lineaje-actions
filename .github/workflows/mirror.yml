@@ -1,0 +1,30 @@
+name: Mirror to public
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: github.repository == 'lineaje-com/lineaje-scan-action'
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to public mirror
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          git config --unset-all http.https://github.com/.extraheader || true
+          git remote add public https://x-access-token:${MIRROR_TOKEN}@github.com/lineaje-actions/lineaje-actions.git
+          git push public HEAD:refs/heads/main
+          git push public --tags
