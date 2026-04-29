@@ -32,4 +32,4 @@ jobs:
           git rm --cached .github/workflows/mirror.yml
           git commit -m "chore: remove mirror workflow"
           git push public _mirror_tmp:refs/heads/main --force
-          git push public --tags
+          git push public --tags --force

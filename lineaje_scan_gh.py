@@ -1166,10 +1166,13 @@ def main():
             setup_node_runtime(args.language_version)
 
     # ── 1. Build config.json ───────────────────────────────────────────────────
-    build_config(args.config_orig, args.refresh_token, args.config)
     veecli_dir = Path(args.veecli).parent
-    shutil.copy2(args.config, veecli_dir / "config.json")
-    log("info", f"Copied config.json to {veecli_dir}/config.json")
+    if Path(args.config).exists():
+        log("info", "Reusing existing config.json (token already exchanged this job)")
+    else:
+        build_config(args.config_orig, args.refresh_token, args.config)
+        shutil.copy2(args.config, veecli_dir / "config.json")
+        log("info", f"Copied config.json to {veecli_dir}/config.json")
 
     # ── 2. Run veecli collect ──────────────────────────────────────────────────
     if scan_mode == "image":

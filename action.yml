@@ -203,6 +203,7 @@ runs:
 
     # ── 9. Install Python dependencies ───────────────────────────────────────
     - name: Install Python dependencies
+      if: env.VEECLI_ALREADY_SETUP != 'true'
       shell: bash
       run: |
         python3 -m venv "${{ github.action_path }}/.venv"
