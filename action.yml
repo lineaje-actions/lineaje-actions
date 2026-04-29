@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ''
   project_version:
-    description: "Project version (defaults to run_number-run_attempt)"
+    description: "Project version (defaults to scan_type-run_number-run_attempt)"
     required: false
     default: ''
   org_name:
@@ -218,9 +218,9 @@ runs:
         if [ -n "${{ inputs.project_version }}" ]; then
           echo "PROJECT_VERSION=${{ inputs.project_version }}" >> "$GITHUB_ENV"
         elif [ "$VEECLI_ALREADY_SETUP" = "true" ]; then
-          echo "PROJECT_VERSION=${{ format('{0}-{1}', github.run_number, github.run_attempt) }}-patched" >> "$GITHUB_ENV"
+          echo "PROJECT_VERSION=${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}-patched" >> "$GITHUB_ENV"
         else
-          echo "PROJECT_VERSION=${{ format('{0}-{1}', github.run_number, github.run_attempt) }}" >> "$GITHUB_ENV"
+          echo "PROJECT_VERSION=${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
         fi
         echo "SRC_URL=${{ github.server_url }}/${{ github.repository }}" >> "$GITHUB_ENV"
         echo "MATCHING_REF=${{ inputs.matching_ref || github.head_ref || github.ref_name }}" >> "$GITHUB_ENV"
