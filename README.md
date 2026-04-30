@@ -149,6 +149,18 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
     post_scan: fix_plan
 ```
 
+### Source scan — .NET
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    language: dotnet
+    language_version: "8.0"
+    post_scan: scan_only
+```
+
 ### Source scan — subdirectory (Node.js 18)
 
 ```yaml
@@ -240,7 +252,7 @@ jobs:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` |
+| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` · `dotnet` |
 | `language_version` | **yes** | — | Version to install (see [Supported language versions](#supported-language-versions)) |
 | `source_dir` | no | `.` | Path to source directory, relative to repo root |
 | `matching_ref` | no | current branch | Branch, tag, or commit being scanned |
@@ -356,6 +368,12 @@ Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11`
 Pass the **major version** via `language_version` (e.g. `18`). Full version strings also accepted.
 
 Supported: `16` (16.20.2) · `18` (18.19.0) · `21` (21.4.0)
+
+### .NET
+
+Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
+
+Supported: `6.0` · `7.0` · `8.0` · `9.0`
 
 ---
 

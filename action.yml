@@ -67,11 +67,11 @@ inputs:
     required: false
     default: '.'
   language:
-    description: "[source] Runtime to install: java | python | node"
+    description: "[source] Runtime to install: java | python | node | dotnet"
     required: false
     default: ''
   language_version:
-    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18'"
+    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18', dotnet: '8.0'"
     required: false
     default: ''
   matching_ref:
@@ -173,6 +173,29 @@ runs:
       with:
         path: /opt/veecli/third_party/linux
         key: veecli-runtimes-${{ inputs.language }}-${{ inputs.language_version }}
+
+    # ── 4b. Install dotnet ────────────────────────────────────────────────────
+    - name: Install dotnet
+      if: inputs.scan_type == 'source' && inputs.language == 'dotnet' && env.VEECLI_ALREADY_SETUP != 'true'
+      shell: bash
+      run: |
+        pushd /opt/veecli > /dev/null
+        wget -q https://dot.net/v1/dotnet-install.sh -O dotnet-install.sh
+        chmod +x ./dotnet-install.sh
+        mkdir -p /opt/veecli/third_party/linux/dotnet
+        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 9.0 > /dev/null 2>&1
+        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 8.0 > /dev/null 2>&1
+        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 7.0 > /dev/null 2>&1
+        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 6.0 > /dev/null 2>&1
+        rm dotnet-install.sh
+        mkdir -p /opt/veecli/third_party/linux/cyclonedx-dotnet
+        /opt/veecli/third_party/linux/dotnet/dotnet tool install \
+          --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet CycloneDX
+        popd > /dev/null
+        echo "DOTNET_ROOT=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
+        echo "DOTNET_CLI_HOME=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
+        echo "/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_PATH"
+        echo "/opt/veecli/third_party/linux/dotnet/tools" >> "$GITHUB_PATH"
 
     # ── 5. Run pre.sh ─────────────────────────────────────────────────────────
     - name: Run pre.sh

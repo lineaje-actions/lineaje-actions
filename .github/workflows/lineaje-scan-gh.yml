@@ -50,7 +50,7 @@ on:
       language:
         required: false
         type: choice
-        options: [java, python, node]
+        options: [java, python, node, dotnet]
       language_version:
         required: false
       matching_ref:
