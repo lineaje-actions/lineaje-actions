@@ -31,6 +31,10 @@ inputs:
     description: "Project version (defaults to scan_type-run_number-run_attempt)"
     required: false
     default: ''
+  version_prefix:
+    description: "Prefix prepended to the auto-generated version (e.g. 'nginx' → 'nginx-image-42-1'). Ignored when project_version is set."
+    required: false
+    default: ''
   org_name:
     description: "Lineaje org name (auto-derived from token if omitted)"
     required: false
@@ -217,10 +221,16 @@ runs:
         echo "PROJECT_NAME=${{ inputs.project_name || github.event.repository.name }}" >> "$GITHUB_ENV"
         if [ -n "${{ inputs.project_version }}" ]; then
           echo "PROJECT_VERSION=${{ inputs.project_version }}" >> "$GITHUB_ENV"
-        elif [ "$VEECLI_ALREADY_SETUP" = "true" ]; then
-          echo "PROJECT_VERSION=${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}-patched" >> "$GITHUB_ENV"
         else
-          echo "PROJECT_VERSION=${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+          PREFIX="${{ inputs.version_prefix }}"
+          BASE="${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}"
+          SUFFIX=""
+          [ "$VEECLI_ALREADY_SETUP" = "true" ] && SUFFIX="-patched"
+          if [ -n "$PREFIX" ]; then
+            echo "PROJECT_VERSION=${PREFIX}-${BASE}${SUFFIX}" >> "$GITHUB_ENV"
+          else
+            echo "PROJECT_VERSION=${BASE}${SUFFIX}" >> "$GITHUB_ENV"
+          fi
         fi
         echo "SRC_URL=${{ github.server_url }}/${{ github.repository }}" >> "$GITHUB_ENV"
         echo "MATCHING_REF=${{ inputs.matching_ref || github.head_ref || github.ref_name }}" >> "$GITHUB_ENV"

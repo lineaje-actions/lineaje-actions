@@ -26,6 +26,8 @@ on:
         required: false
       project_version:
         required: false
+      version_prefix:
+        required: false
       org_name:
         required: false
       lineaje_cli_token:
@@ -72,6 +74,7 @@ jobs:
           scan_type:                  ${{ inputs.scan_type }}
           project_name:               ${{ inputs.project_name }}
           project_version:            ${{ inputs.project_version }}
+          version_prefix:             ${{ inputs.version_prefix }}
           org_name:                   ${{ inputs.org_name }}
           lineaje_cli_token:          ${{ inputs.lineaje_cli_token || secrets.LINEAJE_CLI_TOKEN }}
           output_dir:                 ${{ inputs.output_dir }}
