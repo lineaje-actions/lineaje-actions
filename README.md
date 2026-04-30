@@ -16,6 +16,7 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Usage examples](#usage-examples)
+  - [Multiple images in one job](#image-scan--multiple-images-in-one-job)
 - [Rebuild & rescan workflow](#rebuild--rescan-workflow)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
@@ -96,6 +97,33 @@ jobs:
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
     post_scan: scan_only
 ```
+
+### Image scan — multiple images in one job
+
+Use `version_prefix` to keep each image's scan distinct when scanning multiple images in the same workflow run.
+
+```yaml
+- run: docker build -t nginx-app:latest -f docker/nginx/Dockerfile .
+- run: docker build -t api-app:latest -f docker/api/Dockerfile .
+
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: image
+    image: nginx-app:latest
+    version_prefix: nginx
+    metafiles: docker/nginx/Dockerfile
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: image
+    image: api-app:latest
+    version_prefix: api
+    metafiles: docker/api/Dockerfile
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+```
+
+This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attempt>` — each tracked separately in Lineaje.
 
 ### Source scan — scan only (Java 17)
 
