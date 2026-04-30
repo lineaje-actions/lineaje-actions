@@ -1076,7 +1076,7 @@ def main():
 
     # source scan args
     parser.add_argument("--src-folder",   default="", help="Local path to checked-out source (activates source scan mode)")
-    parser.add_argument("--language", default="", choices=["", "java", "python", "node"],
+    parser.add_argument("--language", default="", choices=["", "java", "python", "node", "dotnet"],
                         help="Language runtime to install before scanning (source scan only)")
     parser.add_argument("--language-version", default="",
                         help=(
@@ -1151,6 +1151,7 @@ def main():
                 "java":   "Java major version: 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19",
                 "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11",
                 "node":   f"Node major or full: {', '.join(NODE_VERSIONS)}",
+                "dotnet": ".NET channel: 6.0, 7.0, 8.0, 9.0",
             }
             sys.exit(
                 f"[error] --language-version is required when --language is set.\n"
@@ -1164,6 +1165,8 @@ def main():
             setup_python_runtime(args.language_version)
         elif args.language == "node":
             setup_node_runtime(args.language_version)
+        elif args.language == "dotnet":
+            log("info", f".NET {args.language_version} — runtime installed by action setup step")
 
     # ── 1. Build config.json ───────────────────────────────────────────────────
     veecli_dir = Path(args.veecli).parent
