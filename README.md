@@ -224,7 +224,7 @@ jobs:
 | `lineaje_cli_token` | **yes** | — | Lineaje token — always use a secret |
 | `org_name` | no | _derived from token_ | Lineaje organization name — auto-extracted from JWT if omitted |
 | `project_name` | no | repository name | Lineaje project name |
-| `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version — overrides all auto-generation |
+| `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version — overrides all auto-generation. For multi-image jobs, prefer `version_prefix` instead so the run context and `-patched` suffix are still auto-appended. |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Ignored when `project_version` is set. Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where veecli writes output |
 | `post_scan` | no | `scan_only` | `scan_only` or `fix_plan` (see [post_scan modes](#post_scan-modes)) |
