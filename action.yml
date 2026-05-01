@@ -190,7 +190,8 @@ runs:
         rm dotnet-install.sh
         mkdir -p /opt/veecli/third_party/linux/cyclonedx-dotnet
         /opt/veecli/third_party/linux/dotnet/dotnet tool install \
-          --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet CycloneDX
+          --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet \
+          --version 2.7.0 CycloneDX
         popd > /dev/null
         echo "DOTNET_ROOT=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
         echo "DOTNET_CLI_HOME=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
