@@ -222,7 +222,9 @@ runs:
     - name: Restore dotnet packages
       if: inputs.scan_type == 'source' && inputs.language == 'dotnet'
       shell: bash
-      run: /opt/veecli/third_party/linux/dotnet/dotnet restore "${{ inputs.source_dir }}"
+      run: |
+        /opt/veecli/third_party/linux/dotnet/dotnet restore "${{ inputs.source_dir }}" \
+          || echo "[warn] dotnet restore exited non-zero (e.g. missing workload); veecli will run its own targeted restore"
 
     # ── 8. Resolve source directory ───────────────────────────────────────────
     - name: Resolve source directory
