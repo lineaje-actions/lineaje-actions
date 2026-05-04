@@ -373,7 +373,7 @@ Supported: `16` (16.20.2) · `18` (18.19.0) · `21` (21.4.0)
 
 Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
 
-Supported: `6.0` · `7.0` · `8.0` · `9.0`
+Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 
 ---
 
