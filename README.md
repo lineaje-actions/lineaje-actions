@@ -17,6 +17,7 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Quick start](#quick-start)
 - [Usage examples](#usage-examples)
   - [Multiple images in one job](#image-scan--multiple-images-in-one-job)
+  - [Source scan — .NET](#source-scan--net)
 - [Rebuild & rescan workflow](#rebuild--rescan-workflow)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
@@ -373,13 +374,13 @@ Supported: `16` (16.20.2) · `18` (18.19.0) · `21` (21.4.0)
 
 Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
 
-Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
+Supported: `8.0` · `9.0` · `10.0`
 
 ---
 
 ## Caching
 
-Runtime downloads (JDK, Maven, Gradle, Python, Node.js) are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds.
+Runtime downloads (JDK, Maven, Gradle, Python, Node.js, .NET) are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds.
 
 ---
 
