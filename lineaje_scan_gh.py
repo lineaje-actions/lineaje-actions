@@ -104,7 +104,7 @@ GRADLE_VERSIONS = [
 PYTHON_APT_DEPS = [
     "git", "apt-utils", "pkg-config", "tar", "unzip", "wget", "curl",
     "build-essential", "libssl-dev", "libffi-dev", "python3-pip",
-    "libbz2-dev", "libpq-dev", "libsqlite3-dev", "python3.10-venv",
+    "libbz2-dev", "libpq-dev", "libsqlite3-dev", "python3-venv",
 ]
 
 PYTHON_RELEASES = [
