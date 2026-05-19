@@ -56,6 +56,7 @@ jobs:
           image: myapp:latest
           metafiles: Dockerfile
           lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+          org_name: dummy_org
 ```
 
 ---
@@ -73,6 +74,7 @@ jobs:
     image: myapp:latest
     metafiles: Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
 ```
 
 ### Image scan — pull from registry first
@@ -85,6 +87,7 @@ jobs:
     image_source_type: registry
     metafiles: Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
 ```
 
 ### Image scan — scan only (no fix plan, no Dockerfile needed)
@@ -96,6 +99,7 @@ jobs:
     image: docker.io/library/python:3.8-slim
     image_source_type: registry
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
     post_scan: scan_only
 ```
 
@@ -114,6 +118,7 @@ Use `version_prefix` to keep each image's scan distinct when scanning multiple i
     version_prefix: nginx
     metafiles: docker/nginx/Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
 
 - uses: lineaje-actions/lineaje-actions@v1
   with:
@@ -122,6 +127,7 @@ Use `version_prefix` to keep each image's scan distinct when scanning multiple i
     version_prefix: api
     metafiles: docker/api/Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
 ```
 
 This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attempt>` — each tracked separately in Lineaje.
@@ -133,6 +139,7 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
   with:
     scan_type: source
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
     language: java
     language_version: "17"
     post_scan: scan_only
@@ -145,6 +152,7 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
   with:
     scan_type: source
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
     language: python
     language_version: "3.10"
     post_scan: fix_plan
@@ -157,6 +165,7 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
   with:
     scan_type: source
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
     language: dotnet
     language_version: "8.0"
     post_scan: scan_only
@@ -170,6 +179,7 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
     scan_type: source
     source_dir: my-service
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
     language: node
     language_version: "18"
     post_scan: fix_plan
@@ -200,6 +210,7 @@ jobs:
           image: myapp:latest
           metafiles: Dockerfile
           lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+          org_name: dummy_org
           post_scan: fix_plan
 
       # 3. If a patched Dockerfile was produced, build it
@@ -222,6 +233,7 @@ jobs:
           image: myapp:latest-patched
           metafiles: Dockerfile
           lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+          org_name: dummy_org
           post_scan: scan_only
 ```
 
@@ -235,7 +247,7 @@ jobs:
 |---|---|---|---|
 | `scan_type` | **yes** | — | `image` or `source` |
 | `lineaje_cli_token` | **yes** | — | Lineaje token — always use a secret |
-| `org_name` | no | _derived from token_ | Lineaje organization name — auto-extracted from JWT if omitted |
+| `org_name` | **yes** | — | Lineaje organization name |
 | `project_name` | no | repository name | Lineaje project name |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where veecli writes output |
@@ -297,6 +309,14 @@ Then pass it in your workflow:
 lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
 ```
 
+> **Tip:** `org_name` is not sensitive, so you can store it as a repository variable instead of hardcoding it:
+> **Settings → Secrets and variables → Actions → Variables → New repository variable**
+>
+> Then reference it in your workflow:
+> ```yaml
+> org_name: ${{ vars.LINEAJE_ORG_NAME }}
+> ```
+
 ---
 
 ## Registry authentication
@@ -330,6 +350,7 @@ steps:
       image_source_type: registry
       metafiles: Dockerfile
       lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+      org_name: dummy_org
 ```
 
 ---
