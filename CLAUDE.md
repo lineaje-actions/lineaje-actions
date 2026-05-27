@@ -96,7 +96,7 @@ After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for k
 
 - **Java**: 8–19 (only specific patch releases are bundled in `OPENJDK_RELEASES`)
 - **Python**: 3.6–3.11 (built from source; Python 3.6 requires `pip-python36.patch` from veecli)
-- **Node**: 16.20.2, 18.19.0, 21.4.0
+- **Node**: 16.20.2, 18.19.0, 20.18.0, 21.4.0, 22.11.0, 24.15.0, 26.2.0
 - **.NET**: 6.0, 7.0, 8.0, 9.0, 10.0
 
 ## Platforms
