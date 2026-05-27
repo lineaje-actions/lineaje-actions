@@ -29,7 +29,7 @@ jobs:
           git config user.email "mirror-bot@lineaje.com"
           git config user.name "Mirror Bot"
           git checkout -b _mirror_tmp
-          git rm --cached .github/workflows/mirror.yml
-          git commit -m "chore: remove mirror workflow"
+          git rm --cached .github/workflows/mirror.yml CLAUDE.md
+          git commit -m "chore: remove mirror workflow and CLAUDE.md"
           git push public _mirror_tmp:refs/heads/main --force
           git push public --tags --force
