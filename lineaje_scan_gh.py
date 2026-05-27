@@ -121,7 +121,7 @@ PIPDEPTREE_VERSION = "2.3.3"
 
 # ── Node.js runtime data ───────────────────────────────────────────────────────
 
-NODE_VERSIONS = ["16.20.2", "18.19.0", "21.4.0"]
+NODE_VERSIONS = ["16.20.2", "18.19.0", "20.18.0", "21.4.0"]
 
 
 def log(level: str, msg: str):

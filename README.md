@@ -389,7 +389,7 @@ Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11`
 
 Pass the **major version** via `language_version` (e.g. `18`). Full version strings also accepted.
 
-Supported: `16` (16.20.2) · `18` (18.19.0) · `21` (21.4.0)
+Supported: `16` (16.20.2) · `18` (18.19.0) · `20` (20.18.0) · `21` (21.4.0)
 
 ### .NET
 
