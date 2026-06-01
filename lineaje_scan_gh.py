@@ -105,6 +105,8 @@ PYTHON_APT_DEPS = [
     "git", "apt-utils", "pkg-config", "tar", "unzip", "wget", "curl",
     "build-essential", "libssl-dev", "libffi-dev", "python3-pip",
     "libbz2-dev", "libpq-dev", "libsqlite3-dev", "python3-venv",
+    "liblzma-dev",   # required for _lzma module; pip uses lzma to extract some packages
+    "zlib1g-dev",    # required for zlib module; needed for pip wheel extraction
 ]
 
 PYTHON_RELEASES = [
@@ -354,12 +356,21 @@ def setup_python_runtime(version: str = ""):
 
             shutil.rmtree(src_dir, ignore_errors=True)
 
-    # ── 3. Install pipdeptree ──────────────────────────────────────────────────
-    log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION}")
-    subprocess.run(
-        ["pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
-        check=True,
-    )
+    # ── 3. Install pipdeptree into each Python version's own environment ─────────
+    # Must use the installed Python's own pip, not the activated action venv.
+    # veecli looks for pipdeptree at third_party/linux/pythonXYZ/bin/pipdeptree;
+    # if it is absent, veecli falls back to the local env Python, which may be the
+    # wrong version (e.g. the runner's system Python instead of the target version).
+    for _, dir_name, binary_name in releases:
+        python_bin = THIRD_PARTY / dir_name / "bin" / binary_name
+        if python_bin.exists():
+            log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION} for {binary_name}")
+            subprocess.run(
+                [str(python_bin), "-m", "pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
+                check=True,
+            )
+        else:
+            log("warn", f"Skipping pipdeptree install — {python_bin} not found")
 
     log("info", "Python runtime setup complete")
 
