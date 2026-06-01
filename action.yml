@@ -92,6 +92,9 @@ outputs:
   patched_dockerfile:
     description: "Absolute path to the patched Dockerfile on the runner (image scan + fix_plan only). Empty string otherwise."
     value: ${{ steps.lineaje_scan.outputs.patched_dockerfile }}
+  exploited_count:
+    description: "Number of exploited (ECH) vulnerabilities found in the scan."
+    value: ${{ steps.lineaje_scan.outputs.exploited_count }}
 
 runs:
   using: "composite"
