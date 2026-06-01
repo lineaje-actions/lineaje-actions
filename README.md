@@ -213,7 +213,16 @@ jobs:
           org_name: dummy_org
           post_scan: fix_plan
 
-      # 3. If a patched Dockerfile was produced, build it
+      # 3. Fail if any exploited (ECH) vulnerabilities were found
+      - name: Check for exploited vulnerabilities
+        run: |
+          ECH="${{ steps.scan.outputs.exploited_count }}"
+          if [ -n "$ECH" ] && [ "$ECH" -gt 0 ]; then
+            echo "ERROR: $ECH exploited vulnerability/vulnerabilities found"
+            exit 1
+          fi
+
+      # 4. If a patched Dockerfile was produced, build it
       - name: Build patched image
         if: steps.scan.outputs.fix_artifact_uploaded == 'true'
         run: |
@@ -224,7 +233,7 @@ jobs:
             -t myapp:latest-patched \
             .
 
-      # 4. Rescan the patched image to confirm fixes
+      # 5. Rescan the patched image to confirm fixes
       - name: Lineaje rescan (patched)
         if: steps.scan.outputs.fix_artifact_uploaded == 'true'
         uses: lineaje-actions/lineaje-actions@v1
@@ -278,6 +287,7 @@ jobs:
 |---|---|---|
 | `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a fix plan artifact was produced and uploaded to the workflow run |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
+| `exploited_count` | `number` | Number of exploited (ECH) vulnerabilities found. Empty string if the vulnerability summary could not be fetched. |
 
 Artifact contents by scan type:
 

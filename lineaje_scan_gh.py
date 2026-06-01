@@ -830,7 +830,7 @@ def fetch_vulnerability_summary(
     return resp.json()
 
 
-def print_vulnerability_summary(data: dict):
+def print_vulnerability_summary(data: dict) -> int:
     stats_key = next((k for k in data if k.startswith("function: stats count")), "")
     stats_dict = data.get(stats_key, {})
     buckets = stats_dict.get("vulnerability_by_severity", {}).get("buckets", [])
@@ -860,6 +860,7 @@ def print_vulnerability_summary(data: dict):
         log("info", f"  Unknown:   {counts['Unknown']}")
     log("info", f"  Exploited: {exploited}")
     log("info", "=" * 50)
+    return exploited
 
 
 # ── Fix plan ──────────────────────────────────────────────────────────────────
@@ -1241,7 +1242,11 @@ def main():
                     log("info", "No vulnerabilities indexed yet — retrying in 15s...")
                     time.sleep(15)
             if vuln_data:
-                print_vulnerability_summary(vuln_data)
+                exploited_count = print_vulnerability_summary(vuln_data)
+                github_output = os.environ.get("GITHUB_OUTPUT")
+                if github_output:
+                    with open(github_output, "a") as _f:
+                        _f.write(f"exploited_count={exploited_count}\n")
         except Exception as e:
             log("warn", f"Failed to fetch vulnerability summary: {e}")
     else:
