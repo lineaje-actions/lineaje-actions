@@ -109,6 +109,7 @@ PYTHON_APT_DEPS = [
 
 PYTHON_RELEASES = [
     # (version, dir_name, binary_name)
+    ("3.12.9", "python312", "python3.12"),
     ("3.11.8", "python311", "python3.11"),
     ("3.10.8", "python310", "python3.10"),
     ("3.9.15",  "python39",  "python3.9"),
@@ -263,7 +264,7 @@ def setup_java_runtime(java_version: str):
 def setup_python_runtime(version: str = ""):
     """Build and install Python from source into /opt/veecli/third_party/linux/.
 
-    version: Python minor version to install (e.g. "3.10", "3.11"). Omit for all (3.6–3.11).
+    version: Python minor version to install (e.g. "3.10", "3.12"). Omit for all (3.6–3.12).
 
     Mirrors setup_python_scan.sh:
       1. apt-get install build dependencies
@@ -283,7 +284,7 @@ def setup_python_runtime(version: str = ""):
     else:
         releases = PYTHON_RELEASES
 
-    label = version or "3.6–3.11"
+    label = version or "3.6–3.12"
     log("info", f"Setting up Python {label} — this will take a while")
 
     # ── 1. System build dependencies ──────────────────────────────────────────
@@ -1083,7 +1084,7 @@ def main():
                             "Required when --language is set. "
                             "java: Java major version (e.g. '17', '11') — "
                             "all Maven and Gradle versions are always installed. "
-                            "python: Python minor (e.g. '3.10', '3.11'). "
+                            "python: Python minor (e.g. '3.10', '3.12'). "
                             "node: Node major or full (e.g. '18', '16.20.2')."
                         ))
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
@@ -1149,7 +1150,7 @@ def main():
         if not args.language_version:
             _AVAILABLE = {
                 "java":   "Java major version: 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19",
-                "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11",
+                "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12",
                 "node":   f"Node major or full: {', '.join(NODE_VERSIONS)}",
                 "dotnet": ".NET channel: 6.0, 7.0, 8.0, 9.0",
             }
