@@ -552,6 +552,15 @@ def setup_go_runtime(version: str):
             else:
                 log("warn", "cyclonedx-gomod binary not found after extraction")
 
+    # ── Symlink cyclonedx-gomod into the Go bin dir ────────────────────────────
+    # veecli's bundled runtimes-config.json only has a cyclonedx-gomod entry for
+    # Go 1.18. For any other version it falls back to searching the Go runtime
+    # bin directory. Symlinking there ensures the fallback always succeeds.
+    cdx_symlink = go_dest / "bin" / "cyclonedx-gomod"
+    if cdx_bin.exists() and not cdx_symlink.exists():
+        cdx_symlink.symlink_to(cdx_bin)
+        log("info", f"Symlinked cyclonedx-gomod into {go_dest}/bin/")
+
     # ── Set GOROOT and update PATH ─────────────────────────────────────────────
     goroot = str(go_dest)
     go_bin_dir = str(go_dest / "bin")
