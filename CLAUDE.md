@@ -34,8 +34,8 @@ The only runtime dependency for `lineaje_scan_gh.py` is the `requests` package; 
 
 The entire action is two files:
 
-- **`action.yml`** — composite action definition. Handles: input validation, downloading `veecli` tarball, caching runtimes (`/opt/veecli/third_party/linux`), installing .NET, resolving env vars, then invoking `lineaje_scan_gh.py`. Also detects and uploads fix-plan artifacts after the script exits.
-- **`lineaje_scan_gh.py`** — Python orchestrator (~1270 lines). Does everything else.
+- **`action.yml`** — composite action definition. Handles: input validation, downloading `veecli` tarball, caching runtimes (`/opt/veecli/third_party/linux`), installing .NET, resolving env vars, then invoking `lineaje_scan_gh.py`. Captures stdout+stderr via `tee` to parse ECH counts after the script exits. Also detects and uploads fix-plan artifacts.
+- **`lineaje_scan_gh.py`** — Python orchestrator (~1400 lines). Does everything else.
 
 ### Scan flow (both modes)
 
@@ -68,8 +68,8 @@ When the action runs more than once in a single job (e.g., scan → patch → re
 
 For source scans, `lineaje_scan_gh.py` installs the requested language runtime into `/opt/veecli/third_party/linux/` before running veecli:
 
-- **Java**: Downloads a specific OpenJDK version + all Maven and all Gradle versions; patches `runtimes-config.json` to fix path mismatches between veecli's bundled paths and the versions we actually install.
-- **Python**: Builds from source using `apt` deps + `./configure && make install`; installs `pipdeptree`.
+- **Java**: Downloads a specific OpenJDK version + all Maven (3.9.16) and all Gradle versions; patches `runtimes-config.json` to fix path mismatches between veecli's bundled paths and the versions we actually install. Java 15+ supports aarch64; Java 25 is x64-only.
+- **Python**: Builds from source using `apt` deps (including `liblzma-dev` and `zlib1g-dev` required for Python 3.12+) + `./configure && make install`. After building, three things happen: (1) pipdeptree is installed into each Python version's own `bin/` so veecli can use it as a tool provider; (2) pipdeptree is also installed into the action venv as a fallback to prevent veecli nil-pointer crashes; (3) each installed Python's `bin/` is prepended to `os.environ["PATH"]` so veecli can discover the binary when resolving `requires-python` constraints. `patch_runtimes_config_python` adds the version to `runtimes-config.json` (pointing to the full binary path) so veecli correctly initialises the Python version.
 - **Node**: Downloads pre-built tarballs from nodejs.org; note arch key is `arm64` (not `aarch64`).
 - **.NET**: Installed in `action.yml` step 4b (not in Python), sets `DOTNET_ROOT` env var.
 
@@ -94,6 +94,10 @@ veecli requires either a `pyproject.toml` or `setup.py` in the scanned directory
 
 `pipdeptree` must also be present in the action venv (`.venv/bin/pipdeptree`) as a local-env fallback for veecli. `setup_python_runtime` installs it both into each Python version's own environment and into the action venv. Removing the venv install causes veecli's `PythonSrcObject` to have a nil runtime context and crash at `python_srcobject.go:280`.
 
+### ECH output (action.yml, not Python)
+
+After `lineaje_scan_gh.py` exits, `action.yml` step 11 uses `awk` to parse the scan log (captured via `tee /tmp/lineaje-scan-XXXXXX.log`) for `Exploited:`, `Critical:`, and `High:` lines and sums them into `ech_count`. This is emitted as a GitHub Actions output. `PIPESTATUS[0]` is used to preserve the Python exit code through the `tee` pipe.
+
 ### Artifact detection (action.yml, not Python)
 
 After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for known filenames to set `fix_artifact_uploaded=true/false` and `patched_dockerfile=<path>`. The Python script itself does not set these outputs.
@@ -104,7 +108,8 @@ After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for k
 - **Python**: 3.6–3.14 (built from source; Python 3.6 requires `pip-python36.patch` from veecli)
 - **Node**: 16.20.2, 18.19.0, 20.18.0, 21.4.0, 22.11.0, 24.15.0, 26.2.0
 - **.NET**: 6.0, 7.0, 8.0, 9.0, 10.0
+- **Go**: 1.18–1.26 (user passes minor version e.g. `1.21`; resolves to latest patch via `GO_VERSIONS` dict). Also installs `cyclonedx-gomod` v1.10.0 as the SBOM tool. Sets `GOROOT` and prepends `go-{minor}/bin` to `PATH` before invoking veecli.
 
 ## Platforms
 
-Linux only (`ubuntu-latest`). Supports x86_64 and aarch64. Node uses `arm64` as the arch string (not `aarch64`); Java uses `aarch64` for versions 15+.
+Linux only (`ubuntu-latest`). Supports x86_64 and aarch64. Node uses `arm64` as the arch string (not `aarch64`); Java uses `aarch64` for versions 15–24 (Java 25 is x64-only on jdk.java.net at time of writing).

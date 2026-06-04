@@ -135,6 +135,23 @@ PIPDEPTREE_VERSION = "2.3.3"
 
 NODE_VERSIONS = ["16.20.2", "18.19.0", "20.18.0", "21.4.0", "22.11.0", "24.15.0", "26.2.0"]
 
+# ── Go runtime data ────────────────────────────────────────────────────────────
+
+# Maps Go minor version → latest patch release (e.g. "1.21" → "1.21.13")
+GO_VERSIONS = {
+    "1.18": "1.18.10",
+    "1.19": "1.19.13",
+    "1.20": "1.20.14",
+    "1.21": "1.21.13",
+    "1.22": "1.22.12",
+    "1.23": "1.23.12",
+    "1.24": "1.24.13",
+    "1.25": "1.25.11",
+    "1.26": "1.26.4",
+}
+
+CYCLONEDX_GOMOD_VERSION = "1.10.0"
+
 
 def log(level: str, msg: str):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -462,6 +479,107 @@ def setup_node_runtime(version: str = ""):
                 log("warn", f"npm not found after extracting Node.js {version}")
 
     log("info", "Node.js runtime setup complete")
+
+
+def setup_go_runtime(version: str):
+    """Install a specific Go version and cyclonedx-gomod into /opt/veecli/third_party/linux/.
+
+    version: Go minor version (e.g. "1.21"). Resolves to the latest known patch release.
+    """
+    if version not in GO_VERSIONS:
+        available = sorted(GO_VERSIONS.keys())
+        sys.exit(
+            f"[error] Go {version!r} not available. "
+            f"Available: {', '.join(available)}"
+        )
+
+    full_version = GO_VERSIONS[version]
+
+    machine = platform.machine()
+    if machine == "x86_64":
+        arch = "amd64"
+    elif machine == "aarch64":
+        arch = "arm64"
+    else:
+        sys.exit(f"[error] Unsupported architecture for Go: {machine}")
+
+    log("info", f"Setting up Go {version} (full: {full_version}, arch: {arch})")
+
+    with tempfile.TemporaryDirectory(prefix="lineaje-go-setup-") as tmp:
+        tmp_path = Path(tmp)
+
+        # ── Install Go ─────────────────────────────────────────────────────────
+        go_dest = THIRD_PARTY / f"go-{version}"
+        go_bin = go_dest / "bin" / "go"
+
+        if go_bin.exists():
+            log("info", f"Skipping Go {full_version} — already installed")
+        else:
+            go_dest.mkdir(parents=True, exist_ok=True)
+            filename = f"go{full_version}.linux-{arch}.tar.gz"
+            url = f"https://go.dev/dl/{filename}"
+            archive = tmp_path / filename
+            _download(url, archive)
+            _extract_tar_strip1(archive, go_dest)
+            archive.unlink(missing_ok=True)
+            if go_bin.exists():
+                log("info", f"Installed Go {full_version}: {go_bin}")
+            else:
+                log("warn", f"go binary not found after extracting Go {full_version}")
+
+        # ── Install cyclonedx-gomod ────────────────────────────────────────────
+        cdx_dest = THIRD_PARTY / "cyclonedx-gomod"
+        cdx_bin = cdx_dest / "cyclonedx-gomod"
+
+        if cdx_bin.exists():
+            log("info", "Skipping cyclonedx-gomod — already installed")
+        else:
+            cdx_dest.mkdir(parents=True, exist_ok=True)
+            cdx_filename = f"cyclonedx-gomod_{CYCLONEDX_GOMOD_VERSION}_linux_{arch}.tar.gz"
+            cdx_url = (
+                f"https://github.com/CycloneDX/cyclonedx-gomod/releases/download"
+                f"/v{CYCLONEDX_GOMOD_VERSION}/{cdx_filename}"
+            )
+            cdx_archive = tmp_path / cdx_filename
+            _download(cdx_url, cdx_archive)
+            _kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+            with tarfile.open(cdx_archive, "r:*") as tf:
+                tf.extractall(cdx_dest, **_kwargs)
+            cdx_archive.unlink(missing_ok=True)
+            if cdx_bin.exists():
+                cdx_bin.chmod(cdx_bin.stat().st_mode | 0o111)
+                log("info", f"Installed cyclonedx-gomod {CYCLONEDX_GOMOD_VERSION}: {cdx_bin}")
+            else:
+                log("warn", "cyclonedx-gomod binary not found after extraction")
+
+    # ── Set GOROOT and update PATH ─────────────────────────────────────────────
+    goroot = str(go_dest)
+    go_bin_dir = str(go_dest / "bin")
+    os.environ["GOROOT"] = goroot
+    path = os.environ.get("PATH", "")
+    if go_bin_dir not in path.split(os.pathsep):
+        os.environ["PATH"] = go_bin_dir + os.pathsep + path
+    log("info", f"GOROOT={goroot}, added {go_bin_dir} to PATH")
+
+    # ── Persist Go env settings via go env -w ─────────────────────────────────
+    # veecli resets the subprocess environment to only PATH + GOROOT, so
+    # os.environ changes don't reach the go binary called by cyclonedx-gomod.
+    # Writing to ~/.config/go/env (via `go env -w`) is a file-based config that
+    # ALL go binaries on this runner read, including the system /usr/bin/go.
+    # This fixes "GOPROXY list contains no entries" and "missing GOSUMDB" errors
+    # that occur when Ubuntu's golang-go package ships with empty defaults.
+    result = subprocess.run(
+        [str(go_bin), "env", "-w",
+         "GOPROXY=https://proxy.golang.org,direct",
+         "GONOSUMDB=*"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        log("info", "Configured GOPROXY and GONOSUMDB in Go env file (~/.config/go/env)")
+    else:
+        log("warn", f"go env -w failed (non-fatal): {result.stderr.strip()}")
+
+    log("info", "Go runtime setup complete")
 
 
 # ── Auth / config ──────────────────────────────────────────────────────────────
@@ -1186,7 +1304,7 @@ def main():
 
     # source scan args
     parser.add_argument("--src-folder",   default="", help="Local path to checked-out source (activates source scan mode)")
-    parser.add_argument("--language", default="", choices=["", "java", "python", "node", "dotnet"],
+    parser.add_argument("--language", default="", choices=["", "java", "python", "node", "dotnet", "golang"],
                         help="Language runtime to install before scanning (source scan only)")
     parser.add_argument("--language-version", default="",
                         help=(
@@ -1262,6 +1380,7 @@ def main():
                 "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14",
                 "node":   f"Node major or full: {', '.join(NODE_VERSIONS)}",
                 "dotnet": ".NET channel: 6.0, 7.0, 8.0, 9.0",
+                "golang": f"Go minor version: {', '.join(sorted(GO_VERSIONS.keys()))}",
             }
             sys.exit(
                 f"[error] --language-version is required when --language is set.\n"
@@ -1276,6 +1395,24 @@ def main():
             patch_runtimes_config_python(args.veecli, args.language_version)
         elif args.language == "node":
             setup_node_runtime(args.language_version)
+        elif args.language == "golang":
+            setup_go_runtime(args.language_version)
+            # cyclonedx-gomod v1.10+ calls `go list -mod readonly`, which
+            # requires go.sum to exist. Run `go mod tidy` to generate it now
+            # using our installed Go (which has GOPROXY/GONOSUMDB already set
+            # in ~/.config/go/env via setup_go_runtime).
+            go_bin = THIRD_PARTY / f"go-{args.language_version}" / "bin" / "go"
+            if go_bin.exists() and args.src_folder:
+                log("info", f"Running go mod tidy in {args.src_folder}")
+                tidy = subprocess.run(
+                    [str(go_bin), "mod", "tidy"],
+                    cwd=args.src_folder,
+                    capture_output=True, text=True,
+                )
+                if tidy.returncode == 0:
+                    log("info", "go mod tidy succeeded — go.sum generated")
+                else:
+                    log("warn", f"go mod tidy failed (non-fatal): {tidy.stderr.strip()}")
         elif args.language == "dotnet":
             log("info", f".NET {args.language_version} — runtime installed by action setup step")
 
