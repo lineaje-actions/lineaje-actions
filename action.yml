@@ -71,7 +71,7 @@ inputs:
     required: false
     default: ''
   language_version:
-    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18', dotnet: '8.0'"
+    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0'"
     required: false
     default: ''
   matching_ref:
@@ -92,6 +92,9 @@ outputs:
   patched_dockerfile:
     description: "Absolute path to the patched Dockerfile on the runner (image scan + fix_plan only). Empty string otherwise."
     value: ${{ steps.lineaje_scan.outputs.patched_dockerfile }}
+  ech_count:
+    description: "Combined count of Exploited + Critical + High vulnerabilities (ECH). Zero means the image meets the gold criteria."
+    value: ${{ steps.lineaje_scan.outputs.ech_count }}
 
 runs:
   using: "composite"
@@ -307,7 +310,11 @@ runs:
           SCAN_ARGS+=(--skip-fix-plan)
         fi
 
-        python3 -u "${{ github.action_path }}/lineaje_scan_gh.py" "${SCAN_ARGS[@]}"
+        # Pipe stdout+stderr through tee so logs still stream to the console AND are
+        # captured for post-processing. PIPESTATUS[0] preserves the Python exit code.
+        SCAN_LOG="/tmp/lineaje-scan.log"
+        python3 -u "${{ github.action_path }}/lineaje_scan_gh.py" "${SCAN_ARGS[@]}" 2>&1 | tee "$SCAN_LOG"
+        SCAN_EXIT=${PIPESTATUS[0]}
 
         # Detect fix plan artifact
         ARTIFACT_FOUND=false
@@ -325,8 +332,20 @@ runs:
             done
           fi
         fi
+
+        # Parse E+C+H counts and sum them — gold criteria is ECH = 0
+        _E=$(awk '/[[:space:]]Exploited:/{print $NF; exit}' "$SCAN_LOG" 2>/dev/null); _E=${_E:-0}
+        _C=$(awk '/[[:space:]]Critical:/{print $NF; exit}'  "$SCAN_LOG" 2>/dev/null); _C=${_C:-0}
+        _H=$(awk '/[[:space:]]High:/{print $NF; exit}'      "$SCAN_LOG" 2>/dev/null); _H=${_H:-0}
+        ECH_COUNT=$(( _E + _C + _H ))
+        echo "ech_count: ${ECH_COUNT}  (Exploited=${_E} Critical=${_C} High=${_H})"
+        rm -f "$SCAN_LOG"
+
         echo "fix_artifact_uploaded=$ARTIFACT_FOUND" >> "$GITHUB_OUTPUT"
         echo "patched_dockerfile=$PATCHED_DOCKERFILE" >> "$GITHUB_OUTPUT"
+        echo "ech_count=${ECH_COUNT}" >> "$GITHUB_OUTPUT"
+
+        [ "$SCAN_EXIT" -eq 0 ] || exit "$SCAN_EXIT"
 
     # ── 12. Upload fix plan artifact (image scan: patched Dockerfile) ─────────
     - name: Upload patched Dockerfile

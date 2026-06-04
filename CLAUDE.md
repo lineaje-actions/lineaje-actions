@@ -88,15 +88,21 @@ Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-
 
 The GPT service has two behaviors (documented in `poll_fix_plan`): it either blocks until ready (returns `guid=null, overall_status=available`) or returns immediately with a new `guid`. When `guid` expires (returns `null` but status ≠ `available`), the code re-issues a fresh request without a guid to get a new one.
 
+### Python source scan requirements
+
+veecli requires either a `pyproject.toml` or `setup.py` in the scanned directory to properly resolve a Python project. Without one of these files, veecli falls back to Python 3.9 and may mis-scan or crash. `pyproject.toml` is the recommended approach.
+
+`pipdeptree` must also be present in the action venv (`.venv/bin/pipdeptree`) as a local-env fallback for veecli. `setup_python_runtime` installs it both into each Python version's own environment and into the action venv. Removing the venv install causes veecli's `PythonSrcObject` to have a nil runtime context and crash at `python_srcobject.go:280`.
+
 ### Artifact detection (action.yml, not Python)
 
 After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for known filenames to set `fix_artifact_uploaded=true/false` and `patched_dockerfile=<path>`. The Python script itself does not set these outputs.
 
 ## Supported versions
 
-- **Java**: 8–19 (only specific patch releases are bundled in `OPENJDK_RELEASES`)
-- **Python**: 3.6–3.11 (built from source; Python 3.6 requires `pip-python36.patch` from veecli)
-- **Node**: 16.20.2, 18.19.0, 21.4.0
+- **Java**: 8–25 (only specific patch releases are bundled in `OPENJDK_RELEASES`)
+- **Python**: 3.6–3.14 (built from source; Python 3.6 requires `pip-python36.patch` from veecli)
+- **Node**: 16.20.2, 18.19.0, 20.18.0, 21.4.0, 22.11.0, 24.15.0, 26.2.0
 - **.NET**: 6.0, 7.0, 8.0, 9.0, 10.0
 
 ## Platforms

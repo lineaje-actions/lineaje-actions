@@ -45,6 +45,7 @@ Usage — source scan:
 
 import argparse
 import base64
+import copy
 import json
 import os
 import platform
@@ -85,9 +86,15 @@ OPENJDK_RELEASES = [
     ("openjdk-17.0.2_linux-amd64", "https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-{arch}_bin.tar.gz",  False),
     ("openjdk-18.0.2_linux-amd64", "https://download.java.net/java/GA/jdk18.0.2/f6ad4b4450fd4d298113270ec84f30ee/9/GPL/openjdk-18.0.2_linux-{arch}_bin.tar.gz",  False),
     ("openjdk-19.0.1_linux-amd64", "https://download.java.net/java/GA/jdk19.0.1/afdd2e245b014143b62ccb916125e3ce/10/GPL/openjdk-19.0.1_linux-{arch}_bin.tar.gz", False),
+    ("openjdk-20.0.2_linux-amd64", "https://download.java.net/java/GA/jdk20.0.2/6e380f22cbe7469fa75fb448bd903d8e/9/GPL/openjdk-20.0.2_linux-{arch}_bin.tar.gz",   False),
+    ("openjdk-21.0.2_linux-amd64", "https://download.java.net/java/GA/jdk21.0.2/f2283984656d49d69e91c558476027ac/13/GPL/openjdk-21.0.2_linux-{arch}_bin.tar.gz",  False),
+    ("openjdk-22.0.2_linux-amd64", "https://download.java.net/java/GA/jdk22.0.2/c9ecb94cd31b495da20a27d4581645e8/9/GPL/openjdk-22.0.2_linux-{arch}_bin.tar.gz",   False),
+    ("openjdk-23.0.2_linux-amd64", "https://download.java.net/java/GA/jdk23.0.2/6da2a6609d6e406f85c491fcb119101b/7/GPL/openjdk-23.0.2_linux-{arch}_bin.tar.gz",   False),
+    ("openjdk-24.0.2_linux-amd64", "https://download.java.net/java/GA/jdk24.0.2/fdc5d0102fe0414db21410ad5834341f/12/GPL/openjdk-24.0.2_linux-{arch}_bin.tar.gz",  False),
+    ("openjdk-25.0.2_linux-amd64", "https://download.java.net/java/GA/jdk25.0.2/b1e0dfa218384cb9959bdcb897162d4e/10/GPL/openjdk-25.0.2_linux-{arch}_bin.tar.gz",  False),
 ]
 
-MAVEN_VERSION = "3.9.15"
+MAVEN_VERSION = "3.9.16"
 MAVEN_URL = f"https://dlcdn.apache.org/maven/maven-3/{MAVEN_VERSION}/binaries/apache-maven-{MAVEN_VERSION}-bin.tar.gz"
 MAVEN_DIR = f"maven-{MAVEN_VERSION}"
 
@@ -105,10 +112,15 @@ PYTHON_APT_DEPS = [
     "git", "apt-utils", "pkg-config", "tar", "unzip", "wget", "curl",
     "build-essential", "libssl-dev", "libffi-dev", "python3-pip",
     "libbz2-dev", "libpq-dev", "libsqlite3-dev", "python3-venv",
+    "liblzma-dev",   # required for _lzma module; pip uses lzma to extract some packages
+    "zlib1g-dev",    # required for zlib module; needed for pip wheel extraction
 ]
 
 PYTHON_RELEASES = [
     # (version, dir_name, binary_name)
+    ("3.14.5", "python314", "python3.14"),
+    ("3.13.3", "python313", "python3.13"),
+    ("3.12.9", "python312", "python3.12"),
     ("3.11.8", "python311", "python3.11"),
     ("3.10.8", "python310", "python3.10"),
     ("3.9.15",  "python39",  "python3.9"),
@@ -121,7 +133,7 @@ PIPDEPTREE_VERSION = "2.3.3"
 
 # ── Node.js runtime data ───────────────────────────────────────────────────────
 
-NODE_VERSIONS = ["16.20.2", "18.19.0", "21.4.0"]
+NODE_VERSIONS = ["16.20.2", "18.19.0", "20.18.0", "21.4.0", "22.11.0", "24.15.0", "26.2.0"]
 
 
 def log(level: str, msg: str):
@@ -263,7 +275,7 @@ def setup_java_runtime(java_version: str):
 def setup_python_runtime(version: str = ""):
     """Build and install Python from source into /opt/veecli/third_party/linux/.
 
-    version: Python minor version to install (e.g. "3.10", "3.11"). Omit for all (3.6–3.11).
+    version: Python minor version to install (e.g. "3.11", "3.14"). Omit for all (3.6–3.14).
 
     Mirrors setup_python_scan.sh:
       1. apt-get install build dependencies
@@ -283,7 +295,7 @@ def setup_python_runtime(version: str = ""):
     else:
         releases = PYTHON_RELEASES
 
-    label = version or "3.6–3.11"
+    label = version or "3.6–3.14"
     log("info", f"Setting up Python {label} — this will take a while")
 
     # ── 1. System build dependencies ──────────────────────────────────────────
@@ -354,11 +366,43 @@ def setup_python_runtime(version: str = ""):
             shutil.rmtree(src_dir, ignore_errors=True)
 
     # ── 3. Install pipdeptree ──────────────────────────────────────────────────
-    log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION}")
+    # Install into each Python version's own environment so veecli can find it
+    # as a "tool provider" at third_party/linux/pythonXYZ/bin/pipdeptree.
+    for _, dir_name, binary_name in releases:
+        python_bin = THIRD_PARTY / dir_name / "bin" / binary_name
+        if python_bin.exists():
+            log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION} for {binary_name}")
+            subprocess.run(
+                [str(python_bin), "-m", "pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
+                check=True,
+            )
+        else:
+            log("warn", f"Skipping pipdeptree install — {python_bin} not found")
+
+    # Also install into the action venv (activated by action.yml step 9) so
+    # veecli always has a local-env pipdeptree fallback. Without this fallback
+    # veecli proceeds with a nil python context and crashes.
+    log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION} into action venv")
     subprocess.run(
         ["pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
         check=True,
     )
+
+    # ── 4. Add installed Python bin dirs to PATH ──────────────────────────────
+    # veecli discovers the Python runtime by searching PATH for python3.XX.
+    # Versions we build from source (e.g. python3.12) are only under
+    # third_party/linux/pythonXYZ/bin/ which is not in PATH by default.
+    # Adding them here means the os.environ inherited by the veecli subprocess
+    # will contain the correct binary, so veecli resolves requires-python
+    # constraints like ">=3.12" to our installed binary rather than falling
+    # back to the system Python (3.9 / 3.13 depending on the runner).
+    for _, dir_name, binary_name in releases:
+        bin_dir = str(THIRD_PARTY / dir_name / "bin")
+        if (THIRD_PARTY / dir_name / "bin" / binary_name).exists():
+            path = os.environ.get("PATH", "")
+            if bin_dir not in path.split(os.pathsep):
+                os.environ["PATH"] = bin_dir + os.pathsep + path
+                log("info", f"Added {bin_dir} to PATH")
 
     log("info", "Python runtime setup complete")
 
@@ -630,6 +674,71 @@ def patch_runtimes_config(veecli_path: str, java_major: str):
     log("info", f"runtimes-config.json: {patched} Java {java_major} path(s) updated")
 
 
+def patch_runtimes_config_python(veecli_path: str, python_minor: str):
+    """Add a Python entry to runtimes-config.json if the requested version is absent.
+
+    NOTE: Previously disabled due to nil pointer crashes in veecli 0.9.9. The
+    root cause was missing venv pipdeptree, not this patch. Now that pipdeptree
+    is installed in both the per-version env and the action venv, this is safe.
+
+    veecli's bundled runtimes-config.json only knows about Python versions that were
+    available when veecli was built.  Newer versions (e.g. 3.12) cause a nil-pointer
+    crash when veecli finds requires-python >=3.12 but has no matching runtime entry.
+    We clone the nearest existing Python entry and retarget it to the installed dir.
+
+    python_minor: e.g. "3.12"
+    """
+    veecli_dir = Path(veecli_path).parent
+    config_path = veecli_dir / "third_party" / "runtimes-config.json"
+
+    if not config_path.exists():
+        log("warn", f"runtimes-config.json not found at {config_path} — skipping Python patch")
+        return
+
+    with config_path.open() as f:
+        cfg = json.load(f)
+
+    runtimes = cfg.get("runtimes", [])
+    python_entries = [e for e in runtimes if "Python" in e.get("provider", "")]
+
+    if not python_entries:
+        log("warn", "No Python entries found in runtimes-config.json — skipping patch")
+        return
+
+    # Check whether an entry for this minor version already exists.
+    dir_name = f"python{python_minor.replace('.', '')}"  # e.g. python312
+    already_present = any(dir_name in e.get("path", "") for e in python_entries)
+    if already_present:
+        log("info", f"runtimes-config.json already has a Python {python_minor} entry — skipping")
+        return
+
+    # Verify we actually installed the runtime before adding the entry.
+    installed_bin = THIRD_PARTY / dir_name / "bin" / f"python{python_minor}"
+    if not installed_bin.exists():
+        log("warn", f"Python {python_minor} binary not found at {installed_bin} — skipping config patch")
+        return
+
+    # Clone the highest existing Python entry and retarget it.
+    template = sorted(python_entries, key=lambda e: e.get("path", ""), reverse=True)[0]
+    new_entry = copy.deepcopy(template)
+    # Update any version-specific fields (e.g. "version": "3.11") via regex.
+    for key in list(new_entry.keys()):
+        val = new_entry[key]
+        if isinstance(val, str):
+            new_entry[key] = re.sub(r"3\.\d+", python_minor, val)
+    # Override path explicitly to the full binary — veecli executes this path
+    # directly, so it must point to the binary, not the directory.
+    binary_path = f"third_party/linux/{dir_name}/bin/python{python_minor}"
+    new_entry["path"] = binary_path
+    runtimes.append(new_entry)
+    cfg["runtimes"] = runtimes
+
+    with config_path.open("w") as f:
+        json.dump(cfg, f, indent=4)
+
+    log("info", f"runtimes-config.json: added Python {python_minor} entry (path: {binary_path})")
+
+
 # ── veecli helpers ─────────────────────────────────────────────────────────────
 
 def _ensure_executable(veecli: str):
@@ -830,7 +939,7 @@ def fetch_vulnerability_summary(
     return resp.json()
 
 
-def print_vulnerability_summary(data: dict):
+def print_vulnerability_summary(data: dict) -> int:
     stats_key = next((k for k in data if k.startswith("function: stats count")), "")
     stats_dict = data.get(stats_key, {})
     buckets = stats_dict.get("vulnerability_by_severity", {}).get("buckets", [])
@@ -860,6 +969,7 @@ def print_vulnerability_summary(data: dict):
         log("info", f"  Unknown:   {counts['Unknown']}")
     log("info", f"  Exploited: {exploited}")
     log("info", "=" * 50)
+    return exploited
 
 
 # ── Fix plan ──────────────────────────────────────────────────────────────────
@@ -1083,7 +1193,7 @@ def main():
                             "Required when --language is set. "
                             "java: Java major version (e.g. '17', '11') — "
                             "all Maven and Gradle versions are always installed. "
-                            "python: Python minor (e.g. '3.10', '3.11'). "
+                            "python: Python minor (e.g. '3.11', '3.14'). "
                             "node: Node major or full (e.g. '18', '16.20.2')."
                         ))
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
@@ -1148,8 +1258,8 @@ def main():
     if scan_mode == "source" and args.language:
         if not args.language_version:
             _AVAILABLE = {
-                "java":   "Java major version: 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19",
-                "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11",
+                "java":   "Java major version: 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25",
+                "python": "Python minor: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14",
                 "node":   f"Node major or full: {', '.join(NODE_VERSIONS)}",
                 "dotnet": ".NET channel: 6.0, 7.0, 8.0, 9.0",
             }
@@ -1163,6 +1273,7 @@ def main():
             patch_runtimes_config(args.veecli, args.language_version)
         elif args.language == "python":
             setup_python_runtime(args.language_version)
+            patch_runtimes_config_python(args.veecli, args.language_version)
         elif args.language == "node":
             setup_node_runtime(args.language_version)
         elif args.language == "dotnet":
@@ -1241,7 +1352,7 @@ def main():
                     log("info", "No vulnerabilities indexed yet — retrying in 15s...")
                     time.sleep(15)
             if vuln_data:
-                print_vulnerability_summary(vuln_data)
+                exploited_count = print_vulnerability_summary(vuln_data)
         except Exception as e:
             log("warn", f"Failed to fetch vulnerability summary: {e}")
     else:

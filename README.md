@@ -213,7 +213,16 @@ jobs:
           org_name: dummy_org
           post_scan: fix_plan
 
-      # 3. If a patched Dockerfile was produced, build it
+      # 3. Fail if any Exploited + Critical + High vulnerabilities were found
+      - name: Check for ECH vulnerabilities
+        run: |
+          ECH="${{ steps.scan.outputs.ech_count }}"
+          if [ -n "$ECH" ] && [ "$ECH" -gt 0 ]; then
+            echo "ERROR: $ECH Exploited/Critical/High vulnerability/vulnerabilities found"
+            exit 1
+          fi
+
+      # 4. If a patched Dockerfile was produced, build it
       - name: Build patched image
         if: steps.scan.outputs.fix_artifact_uploaded == 'true'
         run: |
@@ -224,7 +233,7 @@ jobs:
             -t myapp:latest-patched \
             .
 
-      # 4. Rescan the patched image to confirm fixes
+      # 5. Rescan the patched image to confirm fixes
       - name: Lineaje rescan (patched)
         if: steps.scan.outputs.fix_artifact_uploaded == 'true'
         uses: lineaje-actions/lineaje-actions@v1
@@ -278,6 +287,7 @@ jobs:
 |---|---|---|
 | `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a fix plan artifact was produced and uploaded to the workflow run |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
+| `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Zero means the image meets the gold criteria. Empty string if the vulnerability summary could not be fetched. |
 
 Artifact contents by scan type:
 
@@ -375,27 +385,33 @@ Pass the **major version** via `language_version`. Maven and all Gradle versions
 | `17` | OpenJDK 17.0.2 |
 | `18` | OpenJDK 18.0.2 |
 | `19` | OpenJDK 19.0.1 |
+| `20` | OpenJDK 20.0.2 |
+| `21` | OpenJDK 21.0.2 ⭐ LTS |
+| `22` | OpenJDK 22.0.2 |
+| `23` | OpenJDK 23.0.2 |
+| `24` | OpenJDK 24.0.2 |
+| `25` | OpenJDK 25.0.2 ⭐ LTS |
 
-**Maven bundled:** 3.9.15
+**Maven bundled:** 3.9.16
 **Gradle bundled:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
 
 ### Python
 
 Pass the **minor version** via `language_version`. Python is built from source on the runner.
 
-Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11`
+Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11` · `3.12` · `3.13` · `3.14`
 
 ### Node.js
 
 Pass the **major version** via `language_version` (e.g. `18`). Full version strings also accepted.
 
-Supported: `16` (16.20.2) · `18` (18.19.0) · `21` (21.4.0)
+Supported: `16` (16.20.2) · `18` (18.19.0) · `20` (20.18.0) · `21` (21.4.0) · `22` (22.11.0) · `24` (24.15.0) · `26` (26.2.0)
 
 ### .NET
 
 Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
 
-Supported: `8.0` · `9.0` · `10.0`
+Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 
 ---
 
