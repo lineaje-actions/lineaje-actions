@@ -1351,7 +1351,7 @@ def main():
     # fix plan (both modes)
     parser.add_argument("--gpt-host", default="", help="Lineaje GPT service base URL (default: GPTServiceHost from config, falls back to built-in prod URL)")
     parser.add_argument("--fix-plan-poll-interval", type=int, default=20, help="Seconds between fix plan polls (default: 20)")
-    parser.add_argument("--fix-plan-max-attempts",  type=int, default=80, help="Max fix plan poll attempts (default: 80, ~27 min)")
+    parser.add_argument("--fix-plan-max-attempts",  type=int, default=120, help="Max fix plan poll attempts (default: 120, ~40 min)")
     parser.add_argument("--skip-fix-plan", action="store_true", default=False, help="Skip fix plan after scan")
 
     args = parser.parse_args()
