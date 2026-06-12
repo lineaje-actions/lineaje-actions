@@ -222,9 +222,11 @@ jobs:
             exit 1
           fi
 
-      # 4. If a patched Dockerfile was produced, build it
+      # 4. Rebuild only when curated fixes exist (already available as-is).
+      #    Skip when premium_only=true — those fixes must be requested from
+      #    Lineaje first and are not yet available to apply.
       - name: Build patched image
-        if: steps.scan.outputs.fix_artifact_uploaded == 'true'
+        if: steps.scan.outputs.premium_only == 'false' && steps.scan.outputs.fix_artifact_uploaded == 'true'
         run: |
           docker build \
             -f ${{ steps.scan.outputs.patched_dockerfile }} \
@@ -235,7 +237,7 @@ jobs:
 
       # 5. Rescan the patched image to confirm fixes
       - name: Lineaje rescan (patched)
-        if: steps.scan.outputs.fix_artifact_uploaded == 'true'
+        if: steps.scan.outputs.premium_only == 'false' && steps.scan.outputs.fix_artifact_uploaded == 'true'
         uses: lineaje-actions/lineaje-actions@v1
         with:
           scan_type: image
@@ -288,6 +290,7 @@ jobs:
 | `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a fix plan artifact was produced and uploaded to the workflow run |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
 | `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Zero means the image meets the gold criteria. Empty string if the vulnerability summary could not be fetched. |
+| `premium_only` | `'true'` \| `'false'` | `true` when a fix plan was produced and every fix is **premium** type — fixes that must be requested from Lineaje before they become available. `false` when at least one **curated** fix exists (already available as-is and can be applied immediately by rebuilding), or when no fix plan was produced. |
 
 Artifact contents by scan type:
 

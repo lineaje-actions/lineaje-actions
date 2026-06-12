@@ -95,6 +95,9 @@ outputs:
   ech_count:
     description: "Combined count of Exploited + Critical + High vulnerabilities (ECH). Zero means the image meets the gold criteria."
     value: ${{ steps.lineaje_scan.outputs.ech_count }}
+  premium_only:
+    description: "True when a fix plan was produced and every available fix is premium type (no curated fixes). False otherwise."
+    value: ${{ steps.lineaje_scan.outputs.premium_only }}
 
 runs:
   using: "composite"
@@ -339,11 +342,13 @@ runs:
         _H=$(awk '/[[:space:]]High:/{print $NF; exit}'      "$SCAN_LOG" 2>/dev/null); _H=${_H:-0}
         ECH_COUNT=$(( _E + _C + _H ))
         echo "ech_count: ${ECH_COUNT}  (Exploited=${_E} Critical=${_C} High=${_H})"
+        PREMIUM_ONLY=$(awk '/[[:space:]]Premium only:/{print $NF; exit}' "$SCAN_LOG" 2>/dev/null); PREMIUM_ONLY=${PREMIUM_ONLY:-false}
         rm -f "$SCAN_LOG"
 
         echo "fix_artifact_uploaded=$ARTIFACT_FOUND" >> "$GITHUB_OUTPUT"
         echo "patched_dockerfile=$PATCHED_DOCKERFILE" >> "$GITHUB_OUTPUT"
         echo "ech_count=${ECH_COUNT}" >> "$GITHUB_OUTPUT"
+        echo "premium_only=${PREMIUM_ONLY}" >> "$GITHUB_OUTPUT"
 
         [ "$SCAN_EXIT" -eq 0 ] || exit "$SCAN_EXIT"
 
