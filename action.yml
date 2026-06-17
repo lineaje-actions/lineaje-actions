@@ -148,10 +148,11 @@ runs:
           exit 0
         fi
 
-        curl -fL https://downloads.prod.veedna.com/veecli_latest.tar.gz -o veecli.tar.gz
-        tar -xzf veecli.tar.gz
+        EXTRACT_DIR=$(mktemp -d /tmp/veecli-extract-XXXXXX)
+        curl -fL https://downloads.prod.veedna.com/veecli_latest.tar.gz -o "$EXTRACT_DIR/veecli.tar.gz"
+        tar -xzf "$EXTRACT_DIR/veecli.tar.gz" -C "$EXTRACT_DIR"
 
-        VEECLI_BIN=$(find . -name 'veecli' -not -name '*.tar.gz' -type f | head -1)
+        VEECLI_BIN=$(find "$EXTRACT_DIR" -name 'veecli' -not -name '*.tar.gz' -type f | head -1)
         if [ -z "$VEECLI_BIN" ]; then
           echo "[error] veecli binary not found after extraction"
           exit 1
@@ -159,7 +160,7 @@ runs:
         chmod +x "$VEECLI_BIN"
         echo "VEECLI_PATH=$(realpath "$VEECLI_BIN")" >> "$GITHUB_ENV"
 
-        CONFIG_ORIG=$(find . -name 'config-orig.json' -type f | head -1)
+        CONFIG_ORIG=$(find "$EXTRACT_DIR" -name 'config-orig.json' -type f | head -1)
         if [ -z "$CONFIG_ORIG" ]; then
           echo "[error] config-orig.json not found after extraction"
           exit 1
