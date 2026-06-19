@@ -78,6 +78,10 @@ inputs:
     description: "[source] Branch/tag/commit being scanned (defaults to current branch)"
     required: false
     default: ''
+  pip_extra_index_url:
+    description: "[source/python] Space-separated list of extra pip index URLs for resolving private packages (sets PIP_EXTRA_INDEX_URL). Include credentials in the URL, e.g. https://user:token@registry.example.com/simple/"
+    required: false
+    default: ''
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
@@ -274,6 +278,7 @@ runs:
       shell: bash
       env:
         REFRESH_TOKEN: ${{ inputs.lineaje_cli_token }}
+        PIP_EXTRA_INDEX_URL: ${{ inputs.pip_extra_index_url }}
       run: |
         if [ -z "$REFRESH_TOKEN" ]; then
           echo "[error] lineaje_cli_token input is required"
