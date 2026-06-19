@@ -23,6 +23,7 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Outputs](#outputs)
 - [`post_scan` modes](#post_scan-modes)
 - [Secrets](#secrets)
+- [Private Python packages](#private-python-packages)
 - [Registry authentication](#registry-authentication)
 - [Supported language versions](#supported-language-versions)
 - [Caching](#caching)
@@ -171,6 +172,31 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
     post_scan: scan_only
 ```
 
+### Source scan — Python project with private packages
+
+If your `pyproject.toml` lists packages from a private registry, pass the registry URL via `pip_extra_index_url`. pip resolves private packages from that index and public packages from PyPI as normal.
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
+    language: python
+    language_version: "3.12"
+    pip_extra_index_url: ${{ secrets.PIP_EXTRA_INDEX_URL }}
+```
+
+Store the full URL (including credentials) as a GitHub secret:
+```
+https://user:token@your-registry.example.com/simple/
+```
+
+Multiple registries are supported via space separation:
+```yaml
+pip_extra_index_url: "${{ secrets.REGISTRY_A_URL }} ${{ secrets.REGISTRY_B_URL }}"
+```
+
 ### Source scan — subdirectory (Node.js 18)
 
 ```yaml
@@ -280,6 +306,7 @@ jobs:
 | `language_version` | **yes** | — | Version to install (see [Supported language versions](#supported-language-versions)) |
 | `source_dir` | no | `.` | Path to source directory, relative to repo root |
 | `matching_ref` | no | current branch | Branch, tag, or commit being scanned |
+| `pip_extra_index_url` | no | _(none)_ | Space-separated extra pip index URL(s) for resolving private Python packages (sets `PIP_EXTRA_INDEX_URL`). Embed credentials in the URL or store the whole value as a secret. See [Private Python packages](#private-python-packages). |
 
 ---
 
@@ -329,6 +356,51 @@ lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
 > ```yaml
 > org_name: ${{ vars.LINEAJE_ORG_NAME }}
 > ```
+
+---
+
+## Private Python packages
+
+If your `pyproject.toml` depends on packages that are not on PyPI, native dependency analysis will fail and the scan falls back to a generic filesystem scan. To avoid this, pass `pip_extra_index_url` with your private registry's [PEP 503](https://peps.python.org/pep-0503/) simple index URL.
+
+**Store the URL as a secret** (it typically contains credentials):
+
+```
+Settings → Secrets and variables → Actions → New repository secret
+Name:  PIP_EXTRA_INDEX_URL
+Value: https://user:token@your-registry.example.com/simple/
+```
+
+Then reference it in your workflow:
+
+```yaml
+pip_extra_index_url: ${{ secrets.PIP_EXTRA_INDEX_URL }}
+```
+
+**Using a reusable workflow?** Thread the secret through explicitly, or use `secrets: inherit`:
+
+```yaml
+# reusable workflow definition
+on:
+  workflow_call:
+    secrets:
+      pip_extra_index_url:
+        required: false
+jobs:
+  scan:
+    steps:
+      - uses: lineaje-actions/lineaje-actions@v1
+        with:
+          pip_extra_index_url: ${{ secrets.pip_extra_index_url }}
+```
+
+```yaml
+# calling workflow
+jobs:
+  scan:
+    uses: ./.github/workflows/reusable-scan.yml
+    secrets: inherit   # passes all secrets automatically
+```
 
 ---
 
