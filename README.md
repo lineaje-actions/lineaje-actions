@@ -480,7 +480,7 @@ Pass the **major version** via `language_version`. Maven and Gradle are bundled 
 | `24` | OpenJDK 24.0.2 |
 | `25` | OpenJDK 25.0.2 ⭐ LTS |
 
-**Maven:** 3.9.16 · **Gradle:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
+**Maven:** 3.8.9 · **Gradle:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
 
 ### Python
 

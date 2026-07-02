@@ -94,8 +94,8 @@ OPENJDK_RELEASES = [
     ("openjdk-25.0.2_linux-amd64", "https://download.java.net/java/GA/jdk25.0.2/b1e0dfa218384cb9959bdcb897162d4e/10/GPL/openjdk-25.0.2_linux-{arch}_bin.tar.gz",  False),
 ]
 
-MAVEN_VERSION = "3.9.16"
-MAVEN_URL = f"https://dlcdn.apache.org/maven/maven-3/{MAVEN_VERSION}/binaries/apache-maven-{MAVEN_VERSION}-bin.tar.gz"
+MAVEN_VERSION = "3.8.9"
+MAVEN_URL = f"https://archive.apache.org/dist/maven/maven-3/{MAVEN_VERSION}/binaries/apache-maven-{MAVEN_VERSION}-bin.tar.gz"
 MAVEN_DIR = f"maven-{MAVEN_VERSION}"
 
 GRADLE_VERSIONS = [
