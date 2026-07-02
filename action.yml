@@ -89,6 +89,12 @@ inputs:
     required: false
     default: "scan_only"
 
+  # ── Scan behaviour ───────────────────────────────────────────────────────────
+  fast_scan:
+    description: "Enable fast scan mode (true | false). Defaults to true. Set to false for a deeper but slower scan."
+    required: false
+    default: "true"
+
 outputs:
   fix_artifact_uploaded:
     description: "Whether a fix plan artifact was produced and uploaded (true/false). Image: patched Dockerfile. Source: pom.xml / requirements.txt / package.json / build.gradle etc."
@@ -323,6 +329,10 @@ runs:
 
         if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" = "scan_only" ]; then
           SCAN_ARGS+=(--skip-fix-plan)
+        fi
+
+        if [ "${{ inputs.fast_scan }}" = "true" ]; then
+          SCAN_ARGS+=(--fast-scan)
         fi
 
         # Pipe stdout+stderr through tee so logs still stream to the console AND are
