@@ -71,9 +71,10 @@ For source scans, `lineaje_scan_gh.py` installs the requested language runtime i
 - **Java**: Downloads a specific OpenJDK version + all Maven (3.9.16) and all Gradle versions; patches `runtimes-config.json` to fix path mismatches between veecli's bundled paths and the versions we actually install. Java 15+ supports aarch64; Java 25 is x64-only.
 - **Python**: Builds from source using `apt` deps (including `liblzma-dev` and `zlib1g-dev` required for Python 3.12+) + `./configure && make install`. After building, three things happen: (1) pipdeptree is installed into each Python version's own `bin/` so veecli can use it as a tool provider; (2) pipdeptree is also installed into the action venv as a fallback to prevent veecli nil-pointer crashes; (3) each installed Python's `bin/` is prepended to `os.environ["PATH"]` so veecli can discover the binary when resolving `requires-python` constraints. `patch_runtimes_config_python` adds the version to `runtimes-config.json` (pointing to the full binary path) so veecli correctly initialises the Python version.
 - **Node**: Downloads pre-built tarballs from nodejs.org; note arch key is `arm64` (not `aarch64`).
+- **Go**: Downloads the official Go tarball from `go.dev/dl/` into `third_party/linux/go-{minor}/`. Also downloads `cyclonedx-gomod` v1.10.0-3-lineaje from the `lineaje-labs/cyclonedx-gomod` fork (NOT the upstream CycloneDX repo) and symlinks it into `go-{minor}/bin/`. Runs `go env -w` to persist `GOPROXY` and `GONOSUMDB` settings. Calls `patch_runtimes_config_go` to add the version to `runtimes-config.json` for versions not present in veecli's bundled config (1.19, 1.20, 1.22, 1.24, 1.26). Checks for a `vendor/` directory before running `go mod tidy`.
 - **.NET**: Installed in `action.yml` step 4b (not in Python), sets `DOTNET_ROOT` env var.
 
-Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-<version>`.
+Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-<version>` (Go cache key also includes `-cdxgomod-1.10.0-3-lineaje` to bust stale cache on version bumps).
 
 ### Service endpoints (all read from `config-orig.json`)
 
@@ -108,7 +109,7 @@ After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for k
 - **Python**: 3.6–3.14 (built from source; Python 3.6 requires `pip-python36.patch` from veecli)
 - **Node**: 16.20.2, 18.19.0, 20.18.0, 21.4.0, 22.11.0, 24.15.0, 26.2.0
 - **.NET**: 6.0, 7.0, 8.0, 9.0, 10.0
-- **Go**: 1.18–1.26 (user passes minor version e.g. `1.21`; resolves to latest patch via `GO_VERSIONS` dict). Also installs `cyclonedx-gomod` v1.10.0 as the SBOM tool. Sets `GOROOT` and prepends `go-{minor}/bin` to `PATH` before invoking veecli.
+- **Go**: 1.18–1.26 (user passes minor version e.g. `1.21`; resolves to latest patch via `GO_VERSIONS` dict). Also installs `cyclonedx-gomod` v1.10.0-3-lineaje (Lineaje Labs fork at `lineaje-labs/cyclonedx-gomod`) as the SBOM tool. Sets `GOROOT` and prepends `go-{minor}/bin` to `PATH` before invoking veecli.
 
 ## Platforms
 

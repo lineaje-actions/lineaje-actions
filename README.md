@@ -185,6 +185,19 @@ This produces versions `nginx-image-<run>-<attempt>` and `api-image-<run>-<attem
     post_scan: fix_plan
 ```
 
+### Source scan — Go 1.21
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
+    language: golang
+    language_version: "1.21"
+    post_scan: scan_only
+```
+
 ---
 
 ## Rebuild & rescan workflow
@@ -274,7 +287,7 @@ jobs:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` · `dotnet` |
+| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` · `golang` · `dotnet` |
 | `language_version` | **yes** | — | Version to install (see [Supported language versions](#supported-language-versions)) |
 | `source_dir` | no | `.` | Path to source directory, relative to repo root |
 | `matching_ref` | no | current branch | Branch, tag, or commit being scanned |
@@ -407,6 +420,24 @@ Pass the **major version** via `language_version` (e.g. `18`). Full version stri
 
 Supported: `16` (16.20.2) · `18` (18.19.0) · `20` (20.18.0) · `21` (21.4.0) · `22` (22.11.0) · `24` (24.15.0) · `26` (26.2.0)
 
+### Go
+
+Pass the **minor version** via `language_version` (e.g. `1.21`). The action downloads the official Go tarball and also installs [`cyclonedx-gomod`](https://github.com/lineaje-labs/cyclonedx-gomod) (Lineaje Labs fork) as the SBOM tool.
+
+| `language_version` | Go installed |
+|---|---|
+| `1.18` | Go 1.18.10 |
+| `1.19` | Go 1.19.13 |
+| `1.20` | Go 1.20.14 |
+| `1.21` | Go 1.21.13 |
+| `1.22` | Go 1.22.12 |
+| `1.23` | Go 1.23.12 |
+| `1.24` | Go 1.24.13 |
+| `1.25` | Go 1.25.11 |
+| `1.26` | Go 1.26.4 |
+
+If the scanned repository uses a `vendor/` directory, `go mod tidy` is skipped automatically.
+
 ### .NET
 
 Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
@@ -417,7 +448,7 @@ Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 
 ## Caching
 
-Runtime downloads (JDK, Maven, Gradle, Python, Node.js, .NET) are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds.
+Runtime downloads (JDK, Maven, Gradle, Python, Node.js, Go, .NET) are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds. Go caches also include the `cyclonedx-gomod` version in the cache key, so upgrading the bundled SBOM tool automatically invalidates stale caches.
 
 ---
 

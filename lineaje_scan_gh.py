@@ -150,7 +150,8 @@ GO_VERSIONS = {
     "1.26": "1.26.4",
 }
 
-CYCLONEDX_GOMOD_VERSION = "1.10.0"
+CYCLONEDX_GOMOD_VERSION = "1.10.0-3-lineaje"
+CYCLONEDX_GOMOD_REPO   = "lineaje-labs/cyclonedx-gomod"
 
 
 def log(level: str, msg: str):
@@ -537,7 +538,7 @@ def setup_go_runtime(version: str):
             cdx_dest.mkdir(parents=True, exist_ok=True)
             cdx_filename = f"cyclonedx-gomod_{CYCLONEDX_GOMOD_VERSION}_linux_{arch}.tar.gz"
             cdx_url = (
-                f"https://github.com/CycloneDX/cyclonedx-gomod/releases/download"
+                f"https://github.com/{CYCLONEDX_GOMOD_REPO}/releases/download"
                 f"/v{CYCLONEDX_GOMOD_VERSION}/{cdx_filename}"
             )
             cdx_archive = tmp_path / cdx_filename
@@ -557,7 +558,7 @@ def setup_go_runtime(version: str):
     # Go 1.18. For any other version it falls back to searching the Go runtime
     # bin directory. Symlinking there ensures the fallback always succeeds.
     cdx_symlink = go_dest / "bin" / "cyclonedx-gomod"
-    if cdx_bin.exists() and not cdx_symlink.exists():
+    if cdx_bin.exists() and go_bin.exists() and not cdx_symlink.exists():
         cdx_symlink.symlink_to(cdx_bin)
         log("info", f"Symlinked cyclonedx-gomod into {go_dest}/bin/")
 
@@ -577,16 +578,19 @@ def setup_go_runtime(version: str):
     # ALL go binaries on this runner read, including the system /usr/bin/go.
     # This fixes "GOPROXY list contains no entries" and "missing GOSUMDB" errors
     # that occur when Ubuntu's golang-go package ships with empty defaults.
-    result = subprocess.run(
-        [str(go_bin), "env", "-w",
-         "GOPROXY=https://proxy.golang.org,direct",
-         "GONOSUMDB=*"],
-        capture_output=True, text=True,
-    )
-    if result.returncode == 0:
-        log("info", "Configured GOPROXY and GONOSUMDB in Go env file (~/.config/go/env)")
+    if go_bin.exists():
+        result = subprocess.run(
+            [str(go_bin), "env", "-w",
+             "GOPROXY=https://proxy.golang.org,direct",
+             "GONOSUMDB=*"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log("info", "Configured GOPROXY and GONOSUMDB in Go env file (~/.config/go/env)")
+        else:
+            log("warn", f"go env -w failed (non-fatal): {result.stderr.strip()}")
     else:
-        log("warn", f"go env -w failed (non-fatal): {result.stderr.strip()}")
+        log("warn", "Skipping go env -w — go binary not available after extraction")
 
     log("info", "Go runtime setup complete")
 
@@ -864,6 +868,63 @@ def patch_runtimes_config_python(veecli_path: str, python_minor: str):
         json.dump(cfg, f, indent=4)
 
     log("info", f"runtimes-config.json: added Python {python_minor} entry (path: {binary_path})")
+
+
+def patch_runtimes_config_go(veecli_path: str, go_minor: str):
+    """Add a Go entry to runtimes-config.json if the requested minor version is absent.
+
+    veecli's bundled runtimes-config.json only contains entries for the Go versions
+    that were available when the image was built (1.18, 1.21, 1.23, 1.25).
+    Requesting any other version (1.19, 1.20, 1.22, 1.24, 1.26) without this patch
+    causes veecli to silently skip the Go runtime.
+
+    go_minor: e.g. "1.22"
+    """
+    veecli_dir = Path(veecli_path).parent
+    config_path = veecli_dir / "third_party" / "runtimes-config.json"
+
+    if not config_path.exists():
+        log("warn", f"runtimes-config.json not found at {config_path} — skipping Go patch")
+        return
+
+    with config_path.open() as f:
+        cfg = json.load(f)
+
+    runtimes = cfg.get("runtimes", [])
+    go_entries = [e for e in runtimes if "Go" in e.get("provider", "")]
+
+    if not go_entries:
+        log("warn", "No Go entries found in runtimes-config.json — skipping patch")
+        return
+
+    dir_name = f"go-{go_minor}"
+    already_present = any(dir_name in e.get("path", "") for e in go_entries)
+    if already_present:
+        log("info", f"runtimes-config.json already has a Go {go_minor} entry — skipping")
+        return
+
+    installed_bin = THIRD_PARTY / dir_name / "bin" / "go"
+    if not installed_bin.exists():
+        log("warn", f"Go {go_minor} binary not found at {installed_bin} — skipping config patch")
+        return
+
+    template = sorted(go_entries, key=lambda e: e.get("path", ""), reverse=True)[0]
+    new_entry = copy.deepcopy(template)
+    # Only update the known version-bearing keys — do not regex-replace all fields
+    # blindly, as a pattern like r"1\.\d+" would corrupt full patch versions
+    # (e.g. "1.18.10" → "1.22.10") and any unrelated "1.XX" substrings.
+    for key in ("version", "minVersion", "maxVersion"):
+        if key in new_entry and isinstance(new_entry[key], str):
+            new_entry[key] = re.sub(r"1\.\d+", go_minor, new_entry[key])
+    binary_path = f"third_party/linux/{dir_name}/bin/go"
+    new_entry["path"] = binary_path
+    runtimes.append(new_entry)
+    cfg["runtimes"] = runtimes
+
+    with config_path.open("w") as f:
+        json.dump(cfg, f, indent=4)
+
+    log("info", f"runtimes-config.json: added Go {go_minor} entry (path: {binary_path})")
 
 
 # ── veecli helpers ─────────────────────────────────────────────────────────────
@@ -1321,7 +1382,8 @@ def main():
                             "java: Java major version (e.g. '17', '11') — "
                             "all Maven and Gradle versions are always installed. "
                             "python: Python minor (e.g. '3.11', '3.14'). "
-                            "node: Node major or full (e.g. '18', '16.20.2')."
+                            "node: Node major or full (e.g. '18', '16.20.2'). "
+                            "golang: Go minor version (e.g. '1.21', '1.23')."
                         ))
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
     parser.add_argument("--matching-ref", default="", help="Branch / tag / commit (source scan)")
@@ -1406,22 +1468,27 @@ def main():
             setup_node_runtime(args.language_version)
         elif args.language == "golang":
             setup_go_runtime(args.language_version)
+            patch_runtimes_config_go(args.veecli, args.language_version)
             # cyclonedx-gomod v1.10+ calls `go list -mod readonly`, which
-            # requires go.sum to exist. Run `go mod tidy` to generate it now
-            # using our installed Go (which has GOPROXY/GONOSUMDB already set
-            # in ~/.config/go/env via setup_go_runtime).
+            # requires go.sum to exist. Run `go mod tidy` to generate it when
+            # the project is NOT using vendor mode (vendor/ dir present means
+            # -mod=vendor is implied and tidy would fail or be unnecessary).
             go_bin = THIRD_PARTY / f"go-{args.language_version}" / "bin" / "go"
             if go_bin.exists() and args.src_folder:
-                log("info", f"Running go mod tidy in {args.src_folder}")
-                tidy = subprocess.run(
-                    [str(go_bin), "mod", "tidy"],
-                    cwd=args.src_folder,
-                    capture_output=True, text=True,
-                )
-                if tidy.returncode == 0:
-                    log("info", "go mod tidy succeeded — go.sum generated")
+                vendor_dir = Path(args.src_folder) / "vendor"
+                if vendor_dir.is_dir():
+                    log("info", "vendor/ directory detected — skipping go mod tidy (vendor mode)")
                 else:
-                    log("warn", f"go mod tidy failed (non-fatal): {tidy.stderr.strip()}")
+                    log("info", f"Running go mod tidy in {args.src_folder}")
+                    tidy = subprocess.run(
+                        [str(go_bin), "mod", "tidy"],
+                        cwd=args.src_folder,
+                        capture_output=True, text=True,
+                    )
+                    if tidy.returncode == 0:
+                        log("info", "go mod tidy succeeded — go.sum generated")
+                    else:
+                        log("warn", f"go mod tidy failed (non-fatal): {tidy.stderr.strip()}")
         elif args.language == "dotnet":
             log("info", f".NET {args.language_version} — runtime installed by action setup step")
 

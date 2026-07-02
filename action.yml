@@ -71,7 +71,7 @@ inputs:
     required: false
     default: ''
   language_version:
-    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26'"
+    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.18' | '1.19' | '1.20' | '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26'"
     required: false
     default: ''
   matching_ref:
@@ -175,7 +175,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: /opt/veecli/third_party/linux
-        key: veecli-runtimes-${{ inputs.language }}-${{ inputs.language_version }}
+        key: veecli-runtimes-${{ inputs.language }}-${{ inputs.language_version }}-cdxgomod-1.10.0-3-lineaje
 
     # ── 4b. Install dotnet ────────────────────────────────────────────────────
     - name: Install dotnet
