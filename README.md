@@ -64,7 +64,7 @@ jobs:
 
 ## Usage examples
 
-### Image scan — customer-built image (daemon mode, default)
+### Image scan — locally built image
 
 ```yaml
 - run: docker build -t myapp:latest .
@@ -300,7 +300,7 @@ jobs:
 | `org_name` | **yes** | — | Lineaje organization name |
 | `project_name` | no | repository name | Lineaje project name |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
-| `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where veecli writes output |
+| `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written |
 | `post_scan` | no | `scan_only` | `scan_only` or `fix_plan` (see [post_scan modes](#post_scan-modes)) |
 
 ### Image scan inputs
@@ -457,9 +457,9 @@ steps:
 
 ### Java
 
-Pass the **major version** via `language_version`. Maven and all Gradle versions listed below are always installed alongside the JDK.
+Pass the **major version** via `language_version`. Maven and Gradle are bundled automatically.
 
-| `language_version` | JDK installed |
+| `language_version` | JDK |
 |---|---|
 | `8` | OpenJDK 8u42 |
 | `9` | OpenJDK 9.0.4 |
@@ -480,42 +480,39 @@ Pass the **major version** via `language_version`. Maven and all Gradle versions
 | `24` | OpenJDK 24.0.2 |
 | `25` | OpenJDK 25.0.2 ⭐ LTS |
 
-**Maven bundled:** 3.9.16
-**Gradle bundled:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
+**Maven:** 3.9.16 · **Gradle:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
 
 ### Python
 
-Pass the **minor version** via `language_version`. Python is built from source on the runner.
+Pass the **minor version** via `language_version` (e.g. `3.12`).
 
 Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11` · `3.12` · `3.13` · `3.14`
 
 ### Node.js
 
-Pass the **major version** via `language_version` (e.g. `18`). Full version strings also accepted.
+Pass the **major version** via `language_version` (e.g. `18`).
 
-Supported: `16` (16.20.2) · `18` (18.19.0) · `20` (20.18.0) · `21` (21.4.0) · `22` (22.11.0) · `24` (24.15.0) · `26` (26.2.0)
+Supported: `16` · `18` · `20` · `21` · `22` · `24` · `26`
 
 ### Go
 
-Pass the **minor version** via `language_version` (e.g. `1.21`). The action downloads the official Go tarball and also installs [`cyclonedx-gomod`](https://github.com/lineaje-labs/cyclonedx-gomod) (Lineaje Labs fork) as the SBOM tool.
+Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
-| `language_version` | Go installed |
+| `language_version` | Go version |
 |---|---|
-| `1.18` | Go 1.18.10 |
-| `1.19` | Go 1.19.13 |
-| `1.20` | Go 1.20.14 |
-| `1.21` | Go 1.21.13 |
-| `1.22` | Go 1.22.12 |
-| `1.23` | Go 1.23.12 |
-| `1.24` | Go 1.24.13 |
-| `1.25` | Go 1.25.11 |
-| `1.26` | Go 1.26.4 |
-
-If the scanned repository uses a `vendor/` directory, `go mod tidy` is skipped automatically.
+| `1.18` | 1.18.10 |
+| `1.19` | 1.19.13 |
+| `1.20` | 1.20.14 |
+| `1.21` | 1.21.13 |
+| `1.22` | 1.22.12 |
+| `1.23` | 1.23.12 |
+| `1.24` | 1.24.13 |
+| `1.25` | 1.25.11 |
+| `1.26` | 1.26.4 |
 
 ### .NET
 
-Pass the **minor version** via `language_version` (e.g. `8.0`). All supported versions are installed together; `language_version` tells the scanner which SDK to use for your project.
+Pass the **minor version** via `language_version` (e.g. `8.0`).
 
 Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 
@@ -523,7 +520,7 @@ Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 
 ## Caching
 
-Runtime downloads (JDK, Maven, Gradle, Python, Node.js, Go, .NET) are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds. Go caches also include the `cyclonedx-gomod` version in the cache key, so upgrading the bundled SBOM tool automatically invalidates stale caches.
+Language runtimes are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds.
 
 ---
 
