@@ -139,6 +139,12 @@ runs:
           echo "[error] 'language_version' input is required for source scan"
           exit 1
         fi
+        if [ "${{ inputs.language }}" = "golang" ] && [ "${{ inputs.post_scan }}" = "fix_plan" ]; then
+          echo "[warn] fix_plan is not yet supported for Go — falling back to scan_only"
+          echo "POST_SCAN_EFFECTIVE=scan_only" >> "$GITHUB_ENV"
+        else
+          echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
+        fi
 
     # ── 2. Download and extract veecli ────────────────────────────────────────
     - name: Download and extract veecli
@@ -315,7 +321,7 @@ runs:
           )
         fi
 
-        if [ "${{ inputs.post_scan }}" = "scan_only" ]; then
+        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" = "scan_only" ]; then
           SCAN_ARGS+=(--skip-fix-plan)
         fi
 
@@ -328,7 +334,7 @@ runs:
         # Detect fix plan artifact
         ARTIFACT_FOUND=false
         PATCHED_DOCKERFILE=""
-        if [ "${{ inputs.post_scan }}" != "scan_only" ]; then
+        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" != "scan_only" ]; then
           if [ "${{ inputs.scan_type }}" = "image" ]; then
             PATCHED_DOCKERFILE=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'Dockerfile*' | head -1)
             [ -n "$PATCHED_DOCKERFILE" ] && ARTIFACT_FOUND=true

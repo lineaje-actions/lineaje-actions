@@ -498,6 +498,8 @@ Supported: `16` · `18` · `20` · `21` · `22` · `24` · `26`
 
 Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
+> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` if set.
+
 | `language_version` | Go version |
 |---|---|
 | `1.18` | 1.18.10 |
