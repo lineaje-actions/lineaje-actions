@@ -1304,6 +1304,8 @@ def print_fix_plan(data: dict):
     log("info", f"  Critical: {total_critical}  High: {total_high}  Medium: {total_medium}  Low: {total_low}")
     log("info", f"  Curated patches (low effort): {curated_count}")
     log("info", f"  Premium patches (high effort): {premium_count}")
+    premium_only = len(plan_details) > 0 and curated_count == 0
+    log("info", f"  Premium only: {str(premium_only).lower()}")
     log("info", "-" * 70)
 
     for plan in plan_details:
