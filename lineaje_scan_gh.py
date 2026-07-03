@@ -94,8 +94,8 @@ OPENJDK_RELEASES = [
     ("openjdk-25.0.2_linux-amd64", "https://download.java.net/java/GA/jdk25.0.2/b1e0dfa218384cb9959bdcb897162d4e/10/GPL/openjdk-25.0.2_linux-{arch}_bin.tar.gz",  False),
 ]
 
-MAVEN_VERSION = "3.9.16"
-MAVEN_URL = f"https://dlcdn.apache.org/maven/maven-3/{MAVEN_VERSION}/binaries/apache-maven-{MAVEN_VERSION}-bin.tar.gz"
+MAVEN_VERSION = "3.8.9"
+MAVEN_URL = f"https://archive.apache.org/dist/maven/maven-3/{MAVEN_VERSION}/binaries/apache-maven-{MAVEN_VERSION}-bin.tar.gz"
 MAVEN_DIR = f"maven-{MAVEN_VERSION}"
 
 GRADLE_VERSIONS = [
@@ -805,6 +805,39 @@ def patch_runtimes_config(veecli_path: str, java_major: str):
     log("info", f"runtimes-config.json: {patched} Java {java_major} path(s) updated")
 
 
+def patch_tools_config_maven(veecli_path: str):
+    """Patch tools-config.json so the Maven entry points to the version we installed.
+
+    veecli ships tools-config-orig.json (copied to tools-config.json by pre.sh)
+    with a single MvnProvider entry hardcoded to maven-3.8.9, but we install
+    MAVEN_VERSION into maven-{MAVEN_VERSION}. Without this patch veecli can't
+    find our Maven, logs "maven tool not found", and silently falls back to
+    whatever mvn is on the runner's PATH.
+    """
+    veecli_dir = Path(veecli_path).parent
+    config_path = veecli_dir / "third_party" / "tools-config.json"
+
+    if not config_path.exists():
+        log("warn", f"tools-config.json not found at {config_path} — skipping Maven patch")
+        return
+
+    with config_path.open() as f:
+        cfg = json.load(f)
+
+    patched = 0
+    for entry in cfg.get("tools", []):
+        if entry.get("provider") != "MvnProvider":
+            continue
+        entry["version"] = MAVEN_VERSION
+        entry["path"] = f"third_party/linux/{MAVEN_DIR}/bin/mvn"
+        patched += 1
+
+    with config_path.open("w") as f:
+        json.dump(cfg, f, indent=4)
+
+    log("info", f"tools-config.json: {patched} Maven entr{'y' if patched == 1 else 'ies'} updated to {MAVEN_VERSION}")
+
+
 def patch_runtimes_config_python(veecli_path: str, python_minor: str):
     """Add a Python entry to runtimes-config.json if the requested version is absent.
 
@@ -1389,8 +1422,7 @@ def main():
                         ))
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
     parser.add_argument("--matching-ref", default="", help="Branch / tag / commit (source scan)")
-    parser.add_argument("--fast-scan",    action="store_true", default=True, help="Pass --fast-scan to veecli (source scan)")
-    parser.add_argument("--no-fast-scan", dest="fast_scan", action="store_false")
+    parser.add_argument("--fast-scan",    action="store_true", default=False, help="Pass --fast-scan to veecli")
     parser.add_argument("--exclude-test-dependency",     default="true", help="Exclude test deps (source scan, true/false)")
     parser.add_argument("--exclude-optional-dependency", default="true", help="Exclude optional deps (source scan, true/false)")
     parser.add_argument("--input-json", default="/tmp/lineaje-input.json", help="Where to write input.json (source scan)")
@@ -1463,6 +1495,7 @@ def main():
         if args.language == "java":
             setup_java_runtime(args.language_version)
             patch_runtimes_config(args.veecli, args.language_version)
+            patch_tools_config_maven(args.veecli)
         elif args.language == "python":
             setup_python_runtime(args.language_version)
             patch_runtimes_config_python(args.veecli, args.language_version)
