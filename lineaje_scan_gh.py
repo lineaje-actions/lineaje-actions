@@ -1265,6 +1265,14 @@ def poll_fix_plan(
     return None
 
 
+def _strip_markdown_fence(text: str) -> str:
+    """Extract the contents of a ```lang ... ``` fence the GPT service sometimes wraps
+    generated files in, discarding any surrounding prose. Returns text unchanged if no
+    fence is found."""
+    match = re.search(r"```[^\n]*\r?\n(.*?)\r?\n```", text, re.DOTALL)
+    return match.group(1) if match else text
+
+
 def download_artifacts(data: dict, output_dir: str = "."):
     artifacts = data.get("meta_data", {}).get("artifacts", [])
     if not artifacts:
@@ -1290,12 +1298,21 @@ def download_artifacts(data: dict, output_dir: str = "."):
                 for member in members:
                     extracted = Path(output_dir) / member.name
                     if extracted.is_file():
+                        content = extracted.read_text(errors="replace")
+                        cleaned = _strip_markdown_fence(content)
+                        if cleaned != content:
+                            log("info", f"Stripped markdown code fence from {member.name}")
+                            extracted.write_text(cleaned)
                         log("info", f"--- {member.name} ---")
-                        print(extracted.read_text(errors="replace"), flush=True)
+                        print(cleaned, flush=True)
                         log("info", f"--- end of {member.name} ---")
             else:
+                cleaned = _strip_markdown_fence(resp.text)
+                if cleaned != resp.text:
+                    log("info", f"Stripped markdown code fence from {filename}")
+                    dest.write_text(cleaned)
                 log("info", f"--- {filename} ---")
-                print(resp.text, flush=True)
+                print(cleaned, flush=True)
                 log("info", f"--- end of {filename} ---")
         except requests.RequestException as e:
             log("warn", f"Failed to download {filename}: {e}")
