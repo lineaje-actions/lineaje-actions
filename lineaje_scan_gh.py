@@ -1266,10 +1266,8 @@ def poll_fix_plan(
 
 
 def _strip_markdown_fence(text: str) -> str:
-    """Extract the contents of a ```lang ... ``` fence the GPT service sometimes wraps
-    generated files in, discarding any surrounding prose. Returns text unchanged if no
-    fence is found."""
-    match = re.search(r"```[^\n]*\r?\n(.*?)\r?\n```", text, re.DOTALL)
+    """Strip a wrapping ```lang ... ``` fence the GPT service sometimes leaves in generated files."""
+    match = re.match(r"^```[^\n]*\r?\n(.*?)\r?\n?```\s*$", text.strip(), re.DOTALL)
     return match.group(1) if match else text
 
 
@@ -1298,13 +1296,8 @@ def download_artifacts(data: dict, output_dir: str = "."):
                 for member in members:
                     extracted = Path(output_dir) / member.name
                     if extracted.is_file():
-                        content = extracted.read_text(errors="replace")
-                        cleaned = _strip_markdown_fence(content)
-                        if cleaned != content:
-                            log("info", f"Stripped markdown code fence from {member.name}")
-                            extracted.write_text(cleaned)
                         log("info", f"--- {member.name} ---")
-                        print(cleaned, flush=True)
+                        print(extracted.read_text(errors="replace"), flush=True)
                         log("info", f"--- end of {member.name} ---")
             else:
                 cleaned = _strip_markdown_fence(resp.text)
