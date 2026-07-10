@@ -1598,17 +1598,33 @@ def main():
     company_id = args.company_id or get_company_id_from_token(token)
 
     # ── 5. Vulnerability summary ───────────────────────────────────────────────
+    VULN_MAX_ATTEMPTS = 10
+    VULN_POLL_INTERVAL = 15
+    VULN_INITIAL_DELAY = 5
+
     if sbom_id and company_id:
         try:
+            log("info", f"Waiting {VULN_INITIAL_DELAY}s before first vulnerability summary fetch "
+                         f"to give indexing a head start...")
+            time.sleep(VULN_INITIAL_DELAY)
+
             vuln_data = None
-            for attempt in range(1, 6):
-                log("info", f"Fetching vulnerability summary (attempt {attempt}/5)...")
+            indexed = False
+            for attempt in range(1, VULN_MAX_ATTEMPTS + 1):
+                log("info", f"Fetching vulnerability summary (attempt {attempt}/{VULN_MAX_ATTEMPTS})...")
                 vuln_data = fetch_vulnerability_summary(data_host, token, company_id, sbom_id)
                 if vuln_data.get("total_hits", 0) > 0:
+                    indexed = True
                     break
-                if attempt < 5:
-                    log("info", "No vulnerabilities indexed yet — retrying in 15s...")
-                    time.sleep(15)
+                if attempt < VULN_MAX_ATTEMPTS:
+                    log("info", f"No vulnerabilities indexed yet — retrying in {VULN_POLL_INTERVAL}s...")
+                    time.sleep(VULN_POLL_INTERVAL)
+            if not indexed:
+                total_wait = VULN_INITIAL_DELAY + VULN_POLL_INTERVAL * (VULN_MAX_ATTEMPTS - 1)
+                log("warn", f"Vulnerability data was not confirmed indexed after {VULN_MAX_ATTEMPTS} "
+                             f"attempts ({total_wait}s) — the summary below may read as 0 even if the "
+                             f"scan actually has findings. Re-check this SBOM later before trusting a "
+                             f"clean result.")
             if vuln_data:
                 exploited_count = print_vulnerability_summary(vuln_data)
         except Exception as e:
