@@ -94,6 +94,10 @@ inputs:
     description: "Enable fast scan mode (true | false). Defaults to true. Set to false for a deeper but slower scan."
     required: false
     default: "true"
+  gos_mode:
+    description: "GOS premium registry mode: observe | enforce"
+    required: false
+    default: "observe"
 
 outputs:
   fix_artifact_uploaded:
@@ -334,6 +338,8 @@ runs:
         if [ "${{ inputs.fast_scan }}" = "true" ]; then
           SCAN_ARGS+=(--fast-scan)
         fi
+
+        SCAN_ARGS+=(--gos-mode "${{ inputs.gos_mode }}")
 
         # Pipe stdout+stderr through tee so logs still stream to the console AND are
         # captured for post-processing. PIPESTATUS[0] preserves the Python exit code.

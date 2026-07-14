@@ -974,10 +974,19 @@ def _ensure_executable(veecli: str):
             subprocess.run(["sudo", "chmod", "+x", veecli], check=True)
 
 
-def _run_veecli(cmd: list, veecli_cwd: str) -> str:
+def _gos_premium_env(token: str, gos_mode: str) -> dict:
+    return {
+        "GOS_PREMIUM_REGISTRY_TOKEN": token,
+        "GOS_PREMIUM_NPM_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/api/npm/gos-all-proxy-npm",
+        "GOS_PREMIUM_REGISTRY_USERNAME": "lineaje_customer@lineaje.com",
+    }
+
+
+def _run_veecli(cmd: list, veecli_cwd: str, token: str, gos_mode: str) -> str:
     log("info", f"Running: {' '.join(cmd)}")
     log("info", f"Working directory: {veecli_cwd}")
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=veecli_cwd)
+    env = {**os.environ, **_gos_premium_env(token, gos_mode)}
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=veecli_cwd, env=env)
     output = result.stdout + result.stderr
     print(output, flush=True)
     log("info", f"veecli exit code: {result.returncode}")
@@ -995,6 +1004,8 @@ def run_veecli_image(
     output_dir: str,
     metafiles: str,
     image_source_type: str,
+    token: str,
+    gos_mode: str,
 ) -> str:
     _ensure_executable(veecli)
     cmd = [
@@ -1009,7 +1020,7 @@ def run_veecli_image(
         cmd.extend(["--org-name", org_name])
     if metafiles:
         cmd.extend(["--metafiles", str(Path(metafiles).resolve())])
-    return _run_veecli(cmd, str(Path(veecli).parent))
+    return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
 
 
 def write_input_json(
@@ -1056,6 +1067,8 @@ def run_veecli_source(
     org_name: str,
     output_dir: str,
     fast_scan: bool,
+    token: str,
+    gos_mode: str,
 ) -> str:
     _ensure_executable(veecli)
     cmd = [
@@ -1068,7 +1081,7 @@ def run_veecli_source(
         cmd.extend(["--org-name", org_name])
     if fast_scan:
         cmd.append("--fast-scan")
-    return _run_veecli(cmd, str(Path(veecli).parent))
+    return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
 
 
 # ── Job ID parsing ─────────────────────────────────────────────────────────────
@@ -1433,6 +1446,8 @@ def main():
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
     parser.add_argument("--matching-ref", default="", help="Branch / tag / commit (source scan)")
     parser.add_argument("--fast-scan",    action="store_true", default=False, help="Pass --fast-scan to veecli")
+    parser.add_argument("--gos-mode", default="observe", choices=["observe", "enforce"],
+                        help="GOS premium registry mode: observe | enforce (default: observe)")
     parser.add_argument("--exclude-test-dependency",     default="true", help="Exclude test deps (source scan, true/false)")
     parser.add_argument("--exclude-optional-dependency", default="true", help="Exclude optional deps (source scan, true/false)")
     parser.add_argument("--input-json", default="/tmp/lineaje-input.json", help="Where to write input.json (source scan)")
@@ -1547,10 +1562,12 @@ def main():
         log("info", f"Copied config.json to {veecli_dir}/config.json")
 
     # ── 2. Run veecli collect ──────────────────────────────────────────────────
+    cli_token = args.refresh_token
     if scan_mode == "image":
         output = run_veecli_image(
             args.veecli, args.image, args.name, args.version,
             args.org_name, args.output_dir, args.metafiles, args.image_source_type,
+            cli_token, args.gos_mode,
         )
     else:
         exclude_test     = args.exclude_test_dependency.lower()     not in ("false", "0", "no")
@@ -1567,6 +1584,7 @@ def main():
         )
         output = run_veecli_source(
             args.veecli, args.input_json, args.org_name, args.output_dir, args.fast_scan,
+            cli_token, args.gos_mode,
         )
 
     job_id = parse_job_id(output)
