@@ -247,7 +247,7 @@ runs:
         mkdir -p /opt/veecli/third_party/linux/cyclonedx-dotnet
         /opt/veecli/third_party/linux/dotnet/dotnet tool install \
           --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet \
-          --version 6.2.0 CycloneDX
+          --version 5.5.0 CycloneDX
         popd > /dev/null
 
         sudo tee -a /etc/profile.d/lineaje-env.sh >/dev/null <<'EOF'
