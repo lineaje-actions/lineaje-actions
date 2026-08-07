@@ -313,9 +313,12 @@ jobs:
 | `lineaje_cli_token` | **yes** | — | Lineaje token — always use a secret |
 | `org_name` | **yes** | — | Lineaje organization name |
 | `project_name` | no | repository name | Lineaje project name |
+| `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written |
 | `post_scan` | no | `scan_only` | `scan_only` or `fix_plan` (see [post_scan modes](#post_scan-modes)) |
+| `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
+| `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 
 ### Image scan inputs
 

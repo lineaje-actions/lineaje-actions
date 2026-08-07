@@ -47,19 +47,32 @@ on:
         options: [daemon, registry]
       source_dir:
         required: false
+        default: "."
       language:
         required: false
         type: choice
-        options: [java, python, node, dotnet]
+        options: [java, python, node, dotnet, golang, rust]
       language_version:
         required: false
       matching_ref:
+        required: false
+      pip_extra_index_url:
         required: false
       post_scan:
         required: false
         default: "scan_only"
         type: choice
         options: [scan_only, fix_plan]
+      fast_scan:
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      gos_mode:
+        required: false
+        default: "observe"
+        type: choice
+        options: [observe, enforce]
 
 jobs:
   scan:
@@ -85,4 +98,7 @@ jobs:
           language:                   ${{ inputs.language }}
           language_version:           ${{ inputs.language_version }}
           matching_ref:               ${{ inputs.matching_ref }}
+          pip_extra_index_url:        ${{ inputs.pip_extra_index_url }}
           post_scan:                  ${{ inputs.post_scan }}
+          fast_scan:                  ${{ inputs.fast_scan }}
+          gos_mode:                   ${{ inputs.gos_mode }}
