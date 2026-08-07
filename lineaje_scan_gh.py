@@ -648,16 +648,18 @@ def _expiry_from_jwt(token: str) -> str:
     return ""
 
 
-def build_config(config_orig_path: str, refresh_token: str, output_path: str):
+def build_config(config_orig_path: str, refresh_token: str, output_path: str, auth_service_override: str = ""):
     orig = Path(config_orig_path)
     if not orig.exists():
         sys.exit(f"[error] config-orig.json not found: {orig}")
     with orig.open() as f:
         config_orig = json.load(f)
 
-    auth_service = config_orig.get("LineajeAuthService", "").rstrip("/")
+    auth_service = (auth_service_override or config_orig.get("LineajeAuthService", "")).rstrip("/")
     if not auth_service:
-        sys.exit("[error] LineajeAuthService not found in config-orig.json")
+        sys.exit("[error] LineajeAuthService not found in config-orig.json (and --auth-service not supplied)")
+    if auth_service_override:
+        config_orig["LineajeAuthService"] = auth_service
 
     access_token = fetch_access_token(auth_service, refresh_token)
     expiry = _expiry_from_jwt(access_token)
@@ -1456,6 +1458,7 @@ def main():
     parser.add_argument("--refresh-token", required=True, help="Lineaje refresh token")
     parser.add_argument("--config-orig",   required=True, help="Path to config-orig.json from veecli tarball")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Destination for generated config.json")
+    parser.add_argument("--auth-service", default="", help="Identity service base URL (default: LineajeAuthService from config-orig.json)")
 
     # paths (both modes)
     parser.add_argument("--veecli",     default="veecli",                   help="Path to veecli binary")
@@ -1557,7 +1560,7 @@ def main():
     if Path(args.config).exists():
         log("info", "Reusing existing config.json (token already exchanged this job)")
     else:
-        build_config(args.config_orig, args.refresh_token, args.config)
+        build_config(args.config_orig, args.refresh_token, args.config, args.auth_service)
         shutil.copy2(args.config, veecli_dir / "config.json")
         log("info", f"Copied config.json to {veecli_dir}/config.json")
 
