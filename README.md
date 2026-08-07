@@ -18,6 +18,7 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Usage examples](#usage-examples)
   - [Multiple images in one job](#image-scan--multiple-images-in-one-job)
   - [Source scan — .NET](#source-scan--net)
+  - [Source scan — Rust](#source-scan--rust)
 - [Rebuild & rescan workflow](#rebuild--rescan-workflow)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
@@ -211,6 +212,19 @@ pip_extra_index_url: "${{ secrets.REGISTRY_A_URL }} ${{ secrets.REGISTRY_B_URL }
     post_scan: fix_plan
 ```
 
+### Source scan — Rust
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
+    language: rust
+    language_version: "1.75.0"
+    post_scan: scan_only
+```
+
 ### Source scan — Go 1.21
 
 ```yaml
@@ -315,7 +329,7 @@ jobs:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` · `golang` · `dotnet` |
+| `language` | **yes** | — | Runtime to install: `java` · `python` · `node` · `golang` · `dotnet` · `rust` |
 | `language_version` | **yes** | — | Version to install (see [Supported language versions](#supported-language-versions)) |
 | `source_dir` | no | `.` | Path to source directory, relative to repo root |
 | `matching_ref` | no | current branch | Branch, tag, or commit being scanned |
@@ -517,6 +531,10 @@ Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mod
 Pass the **minor version** via `language_version` (e.g. `8.0`).
 
 Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
+
+### Rust
+
+Pass a `rustup`-resolvable toolchain version via `language_version` (e.g. `1.75.0`) — there's no fixed version list, `rustup toolchain install` resolves it directly.
 
 ---
 

@@ -58,6 +58,22 @@ inputs:
     description: "GPT (fix plan) service base URL (override for dev/staging; default: GPTServiceHost from config-orig.json)"
     required: false
     default: ''
+  scim_url:
+    description: "SCIM service base URL (override for dev/staging; default: SCIMHost from config-orig.json). veecli calls this directly during collect to resolve company details — must match identity_url's environment or collection fails."
+    required: false
+    default: ''
+  data_service_url:
+    description: "Data/GraphQL service base URL (override for dev/staging; default: GraphQLServiceHost from config-orig.json)"
+    required: false
+    default: ''
+  scm_url:
+    description: "SCM service base URL (override for dev/staging; default: SCMHost from config-orig.json)"
+    required: false
+    default: ''
+  notification_url:
+    description: "Notification service base URL (override for dev/staging; default: NotificationServiceHost from config-orig.json)"
+    required: false
+    default: ''
 
   # ── Image scan ──────────────────────────────────────────────────────────────
   image:
@@ -79,11 +95,11 @@ inputs:
     required: false
     default: '.'
   language:
-    description: "[source] Runtime to install: java | python | node | dotnet | golang"
+    description: "[source] Runtime to install: java | python | node | dotnet | golang | rust"
     required: false
     default: ''
   language_version:
-    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.18' | '1.19' | '1.20' | '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26'"
+    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.18' | '1.19' | '1.20' | '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26', rust: e.g. '1.75.0' (a real rustup toolchain version)"
     required: false
     default: ''
   matching_ref:
@@ -154,7 +170,7 @@ runs:
       shell: bash
       run: |
         if [ -z "${{ inputs.language }}" ]; then
-          echo "[error] 'language' input is required for source scan (java | python | node | golang)"
+          echo "[error] 'language' input is required for source scan (java | python | node | dotnet | golang | rust)"
           exit 1
         fi
         if [ -z "${{ inputs.language_version }}" ]; then
@@ -233,10 +249,53 @@ runs:
           --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet \
           --version 2.7.0 CycloneDX
         popd > /dev/null
+
+        sudo tee -a /etc/profile.d/lineaje-env.sh >/dev/null <<'EOF'
+
+        # .NET
+        export DOTNET_ROOT=/opt/veecli/third_party/linux/dotnet
+        export DOTNET_CLI_HOME=/opt/veecli/third_party/linux/dotnet
+        export PATH="$PATH:/opt/veecli/third_party/linux/dotnet:/opt/veecli/third_party/linux/dotnet/tools"
+        EOF
+
         echo "DOTNET_ROOT=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
         echo "DOTNET_CLI_HOME=/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_ENV"
         echo "/opt/veecli/third_party/linux/dotnet" >> "$GITHUB_PATH"
         echo "/opt/veecli/third_party/linux/dotnet/tools" >> "$GITHUB_PATH"
+
+    # ── 4c. Install rust ───────────────────────────────────────────────────────
+    - name: Install rust
+      if: inputs.scan_type == 'source' && inputs.language == 'rust' && env.VEECLI_ALREADY_SETUP != 'true'
+      shell: bash
+      run: |
+        pushd /opt/veecli > /dev/null
+        export RUSTUP_HOME=/opt/veecli/third_party/linux/rustup
+        export CARGO_HOME=/opt/veecli/third_party/linux/cargo
+
+        curl -s https://sh.rustup.rs -o rust.sh
+        bash rust.sh -y -q --default-toolchain none > /dev/null 2>&1
+        rm rust.sh
+
+        "$CARGO_HOME/bin/rustup" toolchain install "${{ inputs.language_version }}" --profile minimal
+        "$CARGO_HOME/bin/rustup" default "${{ inputs.language_version }}"
+
+        "$CARGO_HOME/bin/cargo" install -q --root "$CARGO_HOME" cargo-lock --features=cli
+
+        # Installing coldsnap for scanning AMIs
+        # https://github.com/awslabs/coldsnap
+        "$CARGO_HOME/bin/cargo" install --locked --root "$CARGO_HOME" coldsnap
+        popd > /dev/null
+
+        sudo tee -a /etc/profile.d/lineaje-env.sh >/dev/null <<'EOF'
+
+        # Rust / Cargo
+        export RUSTUP_HOME=/opt/veecli/third_party/linux/rustup
+        export CARGO_HOME=/opt/veecli/third_party/linux/cargo
+        EOF
+
+        echo "RUSTUP_HOME=/opt/veecli/third_party/linux/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=/opt/veecli/third_party/linux/cargo" >> "$GITHUB_ENV"
+        echo "/opt/veecli/third_party/linux/cargo/bin" >> "$GITHUB_PATH"
 
     # ── 5. Run pre.sh ─────────────────────────────────────────────────────────
     - name: Run pre.sh
@@ -331,6 +390,18 @@ runs:
         fi
         if [ -n "${{ inputs.gpt_service_url }}" ]; then
           SCAN_ARGS+=(--gpt-host "${{ inputs.gpt_service_url }}")
+        fi
+        if [ -n "${{ inputs.scim_url }}" ]; then
+          SCAN_ARGS+=(--scim-host "${{ inputs.scim_url }}")
+        fi
+        if [ -n "${{ inputs.data_service_url }}" ]; then
+          SCAN_ARGS+=(--data-host "${{ inputs.data_service_url }}")
+        fi
+        if [ -n "${{ inputs.scm_url }}" ]; then
+          SCAN_ARGS+=(--scm-host "${{ inputs.scm_url }}")
+        fi
+        if [ -n "${{ inputs.notification_url }}" ]; then
+          SCAN_ARGS+=(--notification-host "${{ inputs.notification_url }}")
         fi
 
         if [ "${{ inputs.scan_type }}" = "image" ]; then

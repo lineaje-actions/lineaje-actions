@@ -73,6 +73,7 @@ For source scans, `lineaje_scan_gh.py` installs the requested language runtime i
 - **Node**: Downloads pre-built tarballs from nodejs.org; note arch key is `arm64` (not `aarch64`).
 - **Go**: Downloads the official Go tarball from `go.dev/dl/` into `third_party/linux/go-{minor}/`. Also downloads `cyclonedx-gomod` v1.10.0-3-lineaje from the `lineaje-labs/cyclonedx-gomod` fork (NOT the upstream CycloneDX repo) and symlinks it into `go-{minor}/bin/`. Runs `go env -w` to persist `GOPROXY` and `GONOSUMDB` settings. Calls `patch_runtimes_config_go` to add the version to `runtimes-config.json` for versions not present in veecli's bundled config (1.19, 1.20, 1.22, 1.24, 1.26). Checks for a `vendor/` directory before running `go mod tidy`.
 - **.NET**: Installed in `action.yml` step 4b (not in Python), sets `DOTNET_ROOT` env var.
+- **Rust**: Installed in `action.yml` step 4c (not in Python), mirroring the `.NET` pattern — no `runtimes-config.json`/`tools-config.json` patching, since veecli discovers Cargo projects and tools via `PATH`/env vars rather than a pinned config entry. Installs `rustup` with no default toolchain (`--default-toolchain none`), then explicitly installs and defaults to the requested `language_version` via `rustup toolchain install`/`rustup default` (unlike the upstream veecli team's own installer script, which just takes whatever `rustup` resolves as current stable — pinning was a deliberate deviation so `language_version` behaves consistently with the other languages). Also installs `cargo-lock` (the CycloneDX-adjacent tool veecli uses to read `Cargo.lock`) and `coldsnap` (AWS EBS/AMI snapshot tool — unrelated to source scanning, but included because it's part of veecli's own reference install script for this environment). Sets `RUSTUP_HOME`/`CARGO_HOME` and prepends `third_party/linux/cargo/bin` to `PATH`.
 
 Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-<version>` (Go cache key also includes `-cdxgomod-1.10.0-3-lineaje` to bust stale cache on version bumps).
 
@@ -110,6 +111,7 @@ After `lineaje_scan_gh.py` exits, `action.yml` step 11 scans `$OUTPUT_DIR` for k
 - **Node**: 16.20.2, 18.19.0, 20.18.0, 21.4.0, 22.11.0, 24.15.0, 26.2.0
 - **.NET**: 6.0, 7.0, 8.0, 9.0, 10.0
 - **Go**: 1.18–1.26 (user passes minor version e.g. `1.21`; resolves to latest patch via `GO_VERSIONS` dict). Also installs `cyclonedx-gomod` v1.10.0-3-lineaje (Lineaje Labs fork at `lineaje-labs/cyclonedx-gomod`) as the SBOM tool. Sets `GOROOT` and prepends `go-{minor}/bin` to `PATH` before invoking veecli.
+- **Rust**: any `rustup`-resolvable toolchain version (e.g. `1.75.0`) — no fixed version list, `rustup toolchain install` resolves it directly. Also installs `cargo-lock` and `coldsnap` as tools.
 
 ## Platforms
 

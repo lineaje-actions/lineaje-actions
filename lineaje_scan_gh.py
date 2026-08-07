@@ -648,18 +648,25 @@ def _expiry_from_jwt(token: str) -> str:
     return ""
 
 
-def build_config(config_orig_path: str, refresh_token: str, output_path: str, auth_service_override: str = ""):
+def build_config(config_orig_path: str, refresh_token: str, output_path: str, host_overrides: dict = None):
+    """host_overrides maps config.json host keys (e.g. "SCIMHost") to override
+    values. veecli itself reads config.json directly for several of these
+    (SCIMHost, SCMHost, NotificationServiceHost, GraphQLServiceHost) — so
+    overrides must be baked into config.json here, not applied only at the
+    point our own script calls out to a host."""
     orig = Path(config_orig_path)
     if not orig.exists():
         sys.exit(f"[error] config-orig.json not found: {orig}")
     with orig.open() as f:
         config_orig = json.load(f)
 
-    auth_service = (auth_service_override or config_orig.get("LineajeAuthService", "")).rstrip("/")
+    for key, value in (host_overrides or {}).items():
+        if value:
+            config_orig[key] = value.rstrip("/")
+
+    auth_service = config_orig.get("LineajeAuthService", "").rstrip("/")
     if not auth_service:
         sys.exit("[error] LineajeAuthService not found in config-orig.json (and --auth-service not supplied)")
-    if auth_service_override:
-        config_orig["LineajeAuthService"] = auth_service
 
     access_token = fetch_access_token(auth_service, refresh_token)
     expiry = _expiry_from_jwt(access_token)
@@ -1434,7 +1441,7 @@ def main():
 
     # source scan args
     parser.add_argument("--src-folder",   default="", help="Local path to checked-out source (activates source scan mode)")
-    parser.add_argument("--language", default="", choices=["", "java", "python", "node", "dotnet", "golang"],
+    parser.add_argument("--language", default="", choices=["", "java", "python", "node", "dotnet", "golang", "rust"],
                         help="Language runtime to install before scanning (source scan only)")
     parser.add_argument("--language-version", default="",
                         help=(
@@ -1443,7 +1450,8 @@ def main():
                             "all Maven and Gradle versions are always installed. "
                             "python: Python minor (e.g. '3.11', '3.14'). "
                             "node: Node major or full (e.g. '18', '16.20.2'). "
-                            "golang: Go minor version (e.g. '1.21', '1.23')."
+                            "golang: Go minor version (e.g. '1.21', '1.23'). "
+                            "rust: a rustup-resolvable toolchain version (e.g. '1.75.0')."
                         ))
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
     parser.add_argument("--matching-ref", default="", help="Branch / tag / commit (source scan)")
@@ -1459,6 +1467,9 @@ def main():
     parser.add_argument("--config-orig",   required=True, help="Path to config-orig.json from veecli tarball")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Destination for generated config.json")
     parser.add_argument("--auth-service", default="", help="Identity service base URL (default: LineajeAuthService from config-orig.json)")
+    parser.add_argument("--scim-host", default="", help="SCIM service base URL override (default: SCIMHost from config-orig.json)")
+    parser.add_argument("--scm-host", default="", help="SCM service base URL override (default: SCMHost from config-orig.json)")
+    parser.add_argument("--notification-host", default="", help="Notification service base URL override (default: NotificationServiceHost from config-orig.json)")
 
     # paths (both modes)
     parser.add_argument("--veecli",     default="veecli",                   help="Path to veecli binary")
@@ -1469,7 +1480,7 @@ def main():
     parser.add_argument("--max-attempts",  type=int, default=30, help="Max polling attempts")
 
     # optional overrides (both modes)
-    parser.add_argument("--data-host",  default="", help="Data service URL (default: from config)")
+    parser.add_argument("--data-host",  default="", help="Data/GraphQL service base URL override (default: GraphQLServiceHost from config-orig.json)")
     parser.add_argument("--company-id", default=None, help="Company ID (auto-detected from token)")
 
     # fix plan (both modes)
@@ -1514,6 +1525,7 @@ def main():
                 "node":   f"Node major or full: {', '.join(NODE_VERSIONS)}",
                 "dotnet": ".NET channel: 6.0, 7.0, 8.0, 9.0",
                 "golang": f"Go minor version: {', '.join(sorted(GO_VERSIONS.keys()))}",
+                "rust":   "Rust toolchain version, e.g. '1.75.0' (any version rustup recognizes)",
             }
             sys.exit(
                 f"[error] --language-version is required when --language is set.\n"
@@ -1554,13 +1566,23 @@ def main():
                         log("warn", f"go mod tidy failed (non-fatal): {tidy.stderr.strip()}")
         elif args.language == "dotnet":
             log("info", f".NET {args.language_version} — runtime installed by action setup step")
+        elif args.language == "rust":
+            log("info", f"Rust {args.language_version} — toolchain installed by action setup step")
 
     # ── 1. Build config.json ───────────────────────────────────────────────────
     veecli_dir = Path(args.veecli).parent
     if Path(args.config).exists():
         log("info", "Reusing existing config.json (token already exchanged this job)")
     else:
-        build_config(args.config_orig, args.refresh_token, args.config, args.auth_service)
+        host_overrides = {
+            "LineajeAuthService": args.auth_service,
+            "SCIMHost": args.scim_host,
+            "GraphQLServiceHost": args.data_host,
+            "SCMHost": args.scm_host,
+            "NotificationServiceHost": args.notification_host,
+            "GPTServiceHost": args.gpt_host,
+        }
+        build_config(args.config_orig, args.refresh_token, args.config, host_overrides)
         shutil.copy2(args.config, veecli_dir / "config.json")
         log("info", f"Copied config.json to {veecli_dir}/config.json")
 
