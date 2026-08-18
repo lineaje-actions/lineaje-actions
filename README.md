@@ -23,6 +23,7 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Inputs](#inputs)
 - [Outputs](#outputs)
 - [`post_scan` modes](#post_scan-modes)
+  - [`fix_plan_gos`](#fix_plan_gos)
 - [Secrets](#secrets)
 - [Private Python packages](#private-python-packages)
 - [Registry authentication](#registry-authentication)
@@ -316,7 +317,7 @@ jobs:
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written |
-| `post_scan` | no | `scan_only` | `scan_only` or `fix_plan` (see [post_scan modes](#post_scan-modes)) |
+| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos` (source scans only) — see [post_scan modes](#post_scan-modes) |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 
@@ -351,21 +352,47 @@ jobs:
 
 Artifact contents by scan type:
 
-| Scan type | Artifact name | Files |
-|---|---|---|
-| `image` | `patched-dockerfile` | Patched `Dockerfile` |
-| `source` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| Scan type | `post_scan` | Artifact name | Files |
+|---|---|---|---|
+| `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
+| `source` | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| `source` | `fix_plan_gos` | `lineaje-fix-plan` | Everything `veecli fix` wrote to `<output_dir>/fix/`, with the repo's directory layout preserved |
 
 ---
 
 ## `post_scan` modes
 
-| Value | What happens |
-|---|---|
-| `scan_only` | Scan only — vulnerability summary printed, no fix plan |
-| `fix_plan` | Scan → generate fix plan → download patched artifact → upload as GitHub artifact |
+| Value | Scan types | What happens |
+|---|---|---|
+| `scan_only` | image · source | Scan only — vulnerability summary printed, no fix plan |
+| `fix_plan` | image · source | Scan → generate fix plan → download patched artifact → upload as GitHub artifact |
+| `fix_plan_gos` | source only | Scan → generate fix plan → **apply it** → pull patched manifests from the GOS artifactory → upload as GitHub artifact |
 
 For image scans the uploaded artifact is the patched `Dockerfile`. For source scans it is the patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.).
+
+### `fix_plan_gos`
+
+`fix_plan` hands you the fix plan's own generated manifest. `fix_plan_gos` goes one step further: it submits the plan's components back to Lineaje, which checks each suggested package version against the GOS artifactory and only patches with versions that are actually there — typically Lineaje-rebuilt packages such as `pkg:npm/helmet@2.3.0-lineaje-01`. The patched manifests are then fetched by `veecli fix` and uploaded with the repo's directory layout preserved, so a monorepo's per-module manifests land in their own subdirectories.
+
+Because both the plan generation and the apply step run asynchronously on Lineaje's side, this mode takes noticeably longer than `fix_plan` — the action waits for the fix plan, then waits again for the patch tasks to be queued, before fetching anything.
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
+    language: node
+    language_version: "18"
+    post_scan: fix_plan_gos
+```
+
+Notes:
+
+- **Source scans only.** `veecli fix` patches manifests in a checked-out repo, so `scan_type: image` with `fix_plan_gos` fails validation up front. Use `fix_plan` for images.
+- **Not supported for Go**, same as `fix_plan` — the action falls back to `scan_only` and warns.
+- Patched manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact.
+- To consume the fixes at build time, point your package manager at the GOS registry — the rebuilt versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
 
 ---
 
@@ -515,7 +542,7 @@ Supported: `16` · `18` · `20` · `21` · `22` · `24` · `26`
 
 Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
-> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` if set.
+> **Note:** neither `post_scan: fix_plan` nor `fix_plan_gos` is yet supported for Go — the action automatically falls back to `scan_only` if either is set.
 
 | `language_version` | Go version |
 |---|---|

@@ -991,7 +991,9 @@ def _gos_premium_env(token: str, gos_mode: str) -> dict:
     }
 
 
-def _run_veecli(cmd: list, veecli_cwd: str, token: str, gos_mode: str) -> str:
+def _run_veecli(cmd: list, veecli_cwd: str, token: str, gos_mode: str, fatal: bool = True) -> str:
+    """fatal=False raises instead of exiting, so a caller inside the best-effort
+    fix plan path can log a warning and leave the scan result standing."""
     log("info", f"Running: {' '.join(cmd)}")
     log("info", f"Working directory: {veecli_cwd}")
     env = {**os.environ, **_gos_premium_env(token, gos_mode)}
@@ -1000,7 +1002,9 @@ def _run_veecli(cmd: list, veecli_cwd: str, token: str, gos_mode: str) -> str:
     print(output, flush=True)
     log("info", f"veecli exit code: {result.returncode}")
     if result.returncode != 0:
-        sys.exit(f"[error] veecli exited with code {result.returncode}")
+        if fatal:
+            sys.exit(f"[error] veecli exited with code {result.returncode}")
+        raise RuntimeError(f"veecli exited with code {result.returncode}")
     return output
 
 
@@ -1091,6 +1095,33 @@ def run_veecli_source(
     if fast_scan:
         cmd.append("--fast-scan")
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
+
+
+def run_veecli_fix(
+    veecli: str,
+    sbom_id: str,
+    local_repo_dir: str,
+    output_fix_dir: str,
+    token: str,
+    gos_mode: str,
+) -> str:
+    """Download the patched manifests for a fix plan that has already been applied.
+
+    --poll-tasks blocks until the patch tasks queued by apply_fix_left_plan finish,
+    then writes the patched manifests into --output-fix-dir, preserving the repo's
+    directory layout. Runs non-fatally: a failure here leaves the scan result intact
+    and surfaces as fix_artifact_uploaded=false.
+    """
+    _ensure_executable(veecli)
+    Path(output_fix_dir).mkdir(parents=True, exist_ok=True)
+    cmd = [
+        veecli, "fix",
+        "--poll-tasks",
+        "--local-repo-dir",  str(Path(local_repo_dir).resolve()),
+        "--output-fix-dir",  str(Path(output_fix_dir).resolve()),
+        "--sbom-id",         str(sbom_id),
+    ]
+    return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode, fatal=False)
 
 
 # ── Job ID parsing ─────────────────────────────────────────────────────────────
@@ -1217,12 +1248,15 @@ def print_vulnerability_summary(data: dict) -> int:
 
 # ── Fix plan ──────────────────────────────────────────────────────────────────
 
-def _post_explain(gpt_host: str, token: str, sbom_id: str, query: str, guid: str = None) -> dict:
+def _post_explain(gpt_host: str, token: str, sbom_id: str, query: str, guid: str = None,
+                  metadata: dict = None) -> dict:
     url = f"{gpt_host}/api/v1/explain"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"query": query, "sbom_id": sbom_id}
     if guid:
         body["guid"] = guid
+    if metadata is not None:
+        body["metadata"] = metadata
     resp = requests.post(url, headers=headers, json=body, timeout=120)
     resp.raise_for_status()
     return resp.json()
@@ -1242,6 +1276,76 @@ def request_fix_plan(gpt_host: str, token: str, sbom_id: str):
     guid = data.get("guid")
     log("info", f"Fix plan submitted — guid: {guid}, message: {data.get('message', '')!r}")
     return guid, data
+
+
+APPLY_FIX_QUERY = "Apply fix left plan without pr"
+
+# The apply request is done once the service has queued its agent tasks. It
+# signals that both structurally (task_ids populated) and in prose; task_ids is
+# the primary check since the message wording is the more likely thing to drift.
+APPLY_FIX_READY_MESSAGE = "Created tasks for AI Agents"
+
+
+def _raise_on_explain_error(data: dict, what: str):
+    if data.get("error"):
+        raise RuntimeError(f"{what} failed: {data.get('message', '')}")
+
+
+def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: list,
+                        poll_interval: int = 20, max_attempts: int = 60) -> dict:
+    """Submit a fix plan's components to the GPT service and wait for it to queue tasks.
+
+    The service checks each component's suggested_purl against the GOS artifactory
+    and queues the patch tasks that `veecli fix --poll-tasks` later waits on. The
+    plan_details entries are passed through verbatim as metadata.components —
+    what the fix plan returns is already the shape the apply call expects, so no
+    client-side filtering happens here and this action never talks to the
+    artifactory directly.
+
+    The call is asynchronous. The first POST (no guid) returns a guid with
+    "Request is being processed" and an empty task_ids; re-POSTing the same body
+    plus that guid polls it, until task_ids is populated and the message becomes
+    "Created tasks for AI Agents. Request is being processed". Returning before
+    that point would leave `veecli fix --poll-tasks` with nothing to wait on.
+    """
+    metadata = {"components": plan_details}
+    log("info", f"Applying fix plan for {len(plan_details)} component(s) at {gpt_host}/api/v1/explain")
+
+    data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY, metadata=metadata)
+    _raise_on_explain_error(data, "Apply fix plan")
+    guid = data.get("guid")
+    log("info", f"Apply fix plan submitted — guid: {guid}, message: {data.get('message', '')!r}")
+
+    for attempt in range(max_attempts + 1):
+        task_ids = data.get("task_ids") or []
+        message  = data.get("message", "") or ""
+        if task_ids or APPLY_FIX_READY_MESSAGE in message:
+            log("info", f"Apply fix plan ready — {len(task_ids)} task(s) queued: {task_ids}")
+            return data
+
+        if attempt == max_attempts:
+            break
+
+        time.sleep(poll_interval)
+        log("info", f"Apply fix plan poll {attempt + 1}/{max_attempts} (guid: {guid})...")
+        try:
+            data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY,
+                                 guid=guid, metadata=metadata)
+        except requests.RequestException as e:
+            log("warn", f"Apply fix plan poll {attempt + 1}: {e}")
+            continue
+
+        _raise_on_explain_error(data, "Apply fix plan")
+        # Same guid-expiry quirk as poll_fix_plan: a null guid means the handle is
+        # gone, so the next poll re-submits without one and gets a fresh handle.
+        guid = data.get("guid")
+        log("info", f"  guid: {guid}, message: {data.get('message', '')!r}, "
+                    f"task_ids: {data.get('task_ids') or []}")
+
+    raise RuntimeError(
+        f"Apply fix plan did not queue tasks after {max_attempts} attempts "
+        f"({poll_interval * max_attempts}s) — last message: {data.get('message', '')!r}"
+    )
 
 
 def poll_fix_plan(
@@ -1391,9 +1495,40 @@ def print_fix_plan(data: dict):
     log("info", "=" * 70)
 
 
+def _print_fix_dir(output_fix_dir: str):
+    """Log the patched manifests `veecli fix` wrote, mirroring download_artifacts."""
+    fix_dir = Path(output_fix_dir)
+    if not fix_dir.is_dir():
+        log("warn", f"Fix output directory not found: {fix_dir}")
+        return
+
+    files = sorted(p for p in fix_dir.rglob("*") if p.is_file())
+    if not files:
+        log("warn", f"No patched manifests written to {fix_dir}")
+        return
+
+    log("info", f"veecli fix wrote {len(files)} file(s) to {fix_dir}")
+    for path in files:
+        rel = path.relative_to(fix_dir)
+        log("info", f"--- {rel} ---")
+        print(path.read_text(errors="replace"), flush=True)
+        log("info", f"--- end of {rel} ---")
+
+
 def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
-                  poll_interval: int, max_attempts: int):
-    """Orchestrate gos plan → fix plan request → poll → print → download."""
+                  poll_interval: int, max_attempts: int,
+                  gos: bool = False, veecli: str = "", src_folder: str = "",
+                  output_fix_dir: str = "", cli_token: str = "", gos_mode: str = "observe",
+                  apply_poll_interval: int = 20, apply_max_attempts: int = 60):
+    """Orchestrate gos plan → fix plan request → poll → print → download.
+
+    With gos=False the plan's own pre-signed artifacts are downloaded (the
+    fix_plan mode). With gos=True that download is replaced by the GOS flow:
+    the plan's components are submitted back to the GPT service, which checks
+    each suggested_purl against the GOS artifactory and queues patch tasks,
+    then `veecli fix --poll-tasks` waits on those tasks and writes the patched
+    manifests into output_fix_dir.
+    """
     try:
         request_gos_plan(gpt_host, token, sbom_id)
         guid, initial_data = request_fix_plan(gpt_host, token, sbom_id)
@@ -1414,9 +1549,25 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
         if overall_status == "available" and not plan_details:
             log("info", fix_data.get("answer") or "No fixes available.")
             log("info", "No patch artifacts to download")
-        else:
-            print_fix_plan(fix_data)
+            return
+
+        print_fix_plan(fix_data)
+
+        if not gos:
             download_artifacts(fix_data, output_dir=output_dir)
+            return
+
+        if not plan_details:
+            log("warn", "Fix plan returned no components — nothing to apply, skipping veecli fix")
+            return
+
+        apply_fix_left_plan(
+            gpt_host, token, sbom_id, plan_details,
+            poll_interval=apply_poll_interval,
+            max_attempts=apply_max_attempts,
+        )
+        run_veecli_fix(veecli, sbom_id, src_folder, output_fix_dir, cli_token, gos_mode)
+        _print_fix_dir(output_fix_dir)
     except Exception as e:
         log("warn", f"Failed to fetch fix plan: {e}")
 
@@ -1488,6 +1639,15 @@ def main():
     parser.add_argument("--fix-plan-poll-interval", type=int, default=20, help="Seconds between fix plan polls (default: 20)")
     parser.add_argument("--fix-plan-max-attempts",  type=int, default=120, help="Max fix plan poll attempts (default: 120, ~40 min)")
     parser.add_argument("--skip-fix-plan", action="store_true", default=False, help="Skip fix plan after scan")
+    parser.add_argument("--gos-fix-plan", action="store_true", default=False,
+                        help="After the fix plan, apply it via the GPT service and run `veecli fix` to "
+                             "download patched manifests from the GOS artifactory (source scans only)")
+    parser.add_argument("--output-fix-dir", default="",
+                        help="Where `veecli fix` writes patched manifests (default: <output-dir>/fix)")
+    parser.add_argument("--apply-fix-poll-interval", type=int, default=20,
+                        help="Seconds between polls while the GPT service queues patch tasks (default: 20)")
+    parser.add_argument("--apply-fix-max-attempts", type=int, default=60,
+                        help="Max polls waiting for patch tasks to be queued (default: 60, ~20 min)")
 
     args = parser.parse_args()
 
@@ -1504,6 +1664,15 @@ def main():
             sys.exit("[error] --src-url is required for source scan")
         if not args.matching_ref:
             sys.exit("[error] --matching-ref is required for source scan")
+
+    # `veecli fix` patches manifests in a checked-out repo, so there is nothing
+    # for it to act on in image mode.
+    if args.gos_fix_plan and scan_mode != "source":
+        sys.exit("[error] --gos-fix-plan is only supported for source scans")
+    if args.gos_fix_plan and args.skip_fix_plan:
+        sys.exit("[error] --gos-fix-plan cannot be combined with --skip-fix-plan")
+
+    output_fix_dir = args.output_fix_dir or str(Path(args.output_dir) / "fix")
 
     log("info", f"Scan mode: {scan_mode}")
     log("info", f"Project:  {args.name} v{args.version} (org: {args.org_name})")
@@ -1684,11 +1853,20 @@ def main():
     elif not gpt_host:
         log("info", "Skipping fix plan (--gpt-host not provided)")
     else:
-        log("info", f"Requesting fix plan (scan mode: {scan_mode})...")
+        log("info", f"Requesting fix plan (scan mode: {scan_mode}"
+                    f"{', GOS apply + veecli fix' if args.gos_fix_plan else ''})...")
         _run_fix_plan(
             gpt_host, token, sbom_id, args.output_dir,
             poll_interval=args.fix_plan_poll_interval,
             max_attempts=args.fix_plan_max_attempts,
+            gos=args.gos_fix_plan,
+            veecli=args.veecli,
+            src_folder=args.src_folder,
+            output_fix_dir=output_fix_dir,
+            cli_token=cli_token,
+            gos_mode=args.gos_mode,
+            apply_poll_interval=args.apply_fix_poll_interval,
+            apply_max_attempts=args.apply_fix_max_attempts,
         )
 
 

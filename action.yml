@@ -85,7 +85,7 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan"
+    description: "scan_only | fix_plan | fix_plan_gos (source scans only — applies the plan and pulls patched manifests from the GOS artifactory)"
     required: false
     default: "scan_only"
 
@@ -125,9 +125,14 @@ runs:
           echo "[error] 'image' input is required for image scan"
           exit 1
         fi
-        if [ "${{ inputs.post_scan }}" = "fix_plan" ]; then
+        if [ "${{ inputs.post_scan }}" = "fix_plan_gos" ]; then
+          echo "[error] post_scan=fix_plan_gos is only supported for source scans"
+          echo "         (veecli fix patches dependency manifests in a checked-out repo)"
+          exit 1
+        fi
+        if [ "${{ inputs.post_scan }}" != "scan_only" ]; then
           if [ -z "${{ inputs.metafiles }}" ]; then
-            echo "[error] 'metafiles' input is required for image scan with post_scan=fix_plan (path to Dockerfile)"
+            echo "[error] 'metafiles' input is required for image scan with post_scan=${{ inputs.post_scan }} (path to Dockerfile)"
             exit 1
           fi
           if [ ! -f "${{ inputs.metafiles }}" ]; then
@@ -149,8 +154,8 @@ runs:
           echo "[error] 'language_version' input is required for source scan"
           exit 1
         fi
-        if [ "${{ inputs.language }}" = "golang" ] && [ "${{ inputs.post_scan }}" = "fix_plan" ]; then
-          echo "[warn] fix_plan is not yet supported for Go — falling back to scan_only"
+        if [ "${{ inputs.language }}" = "golang" ] && [ "${{ inputs.post_scan }}" != "scan_only" ]; then
+          echo "[warn] ${{ inputs.post_scan }} is not yet supported for Go — falling back to scan_only"
           echo "POST_SCAN_EFFECTIVE=scan_only" >> "$GITHUB_ENV"
         else
           echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
@@ -330,6 +335,7 @@ runs:
         echo "SRC_URL=${{ github.server_url }}/${{ github.repository }}" >> "$GITHUB_ENV"
         echo "MATCHING_REF=${{ inputs.matching_ref || github.head_ref || github.ref_name }}" >> "$GITHUB_ENV"
         echo "OUTPUT_DIR=${{ inputs.output_dir }}" >> "$GITHUB_ENV"
+        echo "OUTPUT_FIX_DIR=${{ inputs.output_dir }}/fix" >> "$GITHUB_ENV"
 
     # ── 11. Run Lineaje scan ──────────────────────────────────────────────────
     - name: Lineaje scan
@@ -374,8 +380,14 @@ runs:
           )
         fi
 
-        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" = "scan_only" ]; then
+        # POST_SCAN_EFFECTIVE is set by step 1b (source scans) and may differ from
+        # inputs.post_scan — Go falls back to scan_only. Image scans never set it.
+        EFFECTIVE="${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}"
+
+        if [ "$EFFECTIVE" = "scan_only" ]; then
           SCAN_ARGS+=(--skip-fix-plan)
+        elif [ "$EFFECTIVE" = "fix_plan_gos" ]; then
+          SCAN_ARGS+=(--gos-fix-plan --output-fix-dir "$OUTPUT_FIX_DIR")
         fi
 
         if [ "${{ inputs.fast_scan }}" = "true" ]; then
@@ -393,7 +405,13 @@ runs:
         # Detect fix plan artifact
         ARTIFACT_FOUND=false
         PATCHED_DOCKERFILE=""
-        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" != "scan_only" ]; then
+        if [ "$EFFECTIVE" = "fix_plan_gos" ]; then
+          # veecli fix writes patched manifests into OUTPUT_FIX_DIR preserving the
+          # repo's directory layout, so search recursively rather than at depth 1.
+          if [ -d "$OUTPUT_FIX_DIR" ] && [ -n "$(find "$OUTPUT_FIX_DIR" -type f -print -quit)" ]; then
+            ARTIFACT_FOUND=true
+          fi
+        elif [ "$EFFECTIVE" != "scan_only" ]; then
           if [ "${{ inputs.scan_type }}" = "image" ]; then
             PATCHED_DOCKERFILE=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'Dockerfile*' | head -1)
             [ -n "$PATCHED_DOCKERFILE" ] && ARTIFACT_FOUND=true
@@ -418,6 +436,7 @@ runs:
 
         echo "fix_artifact_uploaded=$ARTIFACT_FOUND" >> "$GITHUB_OUTPUT"
         echo "patched_dockerfile=$PATCHED_DOCKERFILE" >> "$GITHUB_OUTPUT"
+        echo "post_scan_effective=$EFFECTIVE" >> "$GITHUB_OUTPUT"
         echo "ech_count=${ECH_COUNT}" >> "$GITHUB_OUTPUT"
         echo "premium_only=${PREMIUM_ONLY}" >> "$GITHUB_OUTPUT"
 
@@ -434,7 +453,7 @@ runs:
 
     # ── 13. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
     - name: Upload fix plan artifacts
-      if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
+      if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: lineaje-fix-plan
@@ -447,4 +466,15 @@ runs:
           ${{ inputs.output_dir }}/pyproject.toml
           ${{ inputs.output_dir }}/package.json
           ${{ inputs.output_dir }}/package-lock.json
+        if-no-files-found: ignore
+
+    # ── 14. Upload GOS fix artifacts (source scan: whatever veecli fix wrote) ──
+    # Unlike step 13's fixed filename list, veecli fix mirrors the repo layout into
+    # the fix dir, so the whole directory is uploaded.
+    - name: Upload GOS fix artifacts
+      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lineaje-fix-plan
+        path: ${{ inputs.output_dir }}/fix
         if-no-files-found: ignore

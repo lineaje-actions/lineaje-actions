@@ -62,7 +62,7 @@ on:
         required: false
         default: "scan_only"
         type: choice
-        options: [scan_only, fix_plan]
+        options: [scan_only, fix_plan, fix_plan_gos]
       fast_scan:
         required: false
         default: "true"

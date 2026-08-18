@@ -86,6 +86,19 @@ Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-
 | `GraphQLServiceHost` | Vulnerability summary (LQL query) |
 | `GPTServiceHost` | Fix plan generation (`/api/v1/explain`) |
 
+### `post_scan=fix_plan_gos` (source scans only)
+
+A third post-scan mode layered on top of `fix_plan`. After the normal fix plan comes back, two extra steps run in `_run_fix_plan` (`gos=True`) instead of `download_artifacts`:
+
+1. `apply_fix_left_plan` POSTs to `/api/v1/explain` with `query="Apply fix left plan without pr"` and `metadata.components` set to the fix plan's `plan_details` **verbatim**. The backend checks each `suggested_purl` against the GOS artifactory (Lineaje-rebuilt versions like `pkg:npm/helmet@2.3.0-lineaje-01`) and queues patch tasks. This action never queries the artifactory directly and does no client-side filtering of `plan_details` — deliberately, so the filter can't drift from the backend's.
+
+   **This call is asynchronous and must be polled.** The first POST (no guid) returns a guid, `message="Request is being processed"`, and an empty `task_ids`. Subsequent POSTs repeat the *entire* body — same query, same `metadata.components` — plus that guid, until `task_ids` is populated and the message becomes `"Created tasks for AI Agents. Request is being processed"`. Returning early leaves step 2 with no tasks to wait on, so it would exit having patched nothing. The readiness check keys on `task_ids` being non-empty first and the message string second, since the wording is the likelier thing to drift. Guid expiry (`guid: null` mid-poll) is handled the same way `poll_fix_plan` does it — the next poll omits the guid to get a fresh handle.
+2. `run_veecli_fix` runs `veecli fix --poll-tasks --local-repo-dir <src> --output-fix-dir <out>/fix --sbom-id <id>`, which blocks on those tasks and writes patched manifests preserving the repo layout.
+
+Both steps run inside `_run_fix_plan`'s existing try/except, so failures warn rather than fail the scan — hence `_run_veecli` gained a `fatal` parameter (`RuntimeError` instead of `sys.exit`, since `SystemExit` escapes `except Exception`).
+
+Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string comparisons ([step 1](action.yml) metafiles validation, step 1b Go fallback) that silently did the wrong thing for a new mode value — both are now `!= "scan_only"`. Step 11 exports a `post_scan_effective` step output (undeclared in `outputs:`, internal use only) so the two mutually-exclusive source upload steps can tell `fix_plan` from `fix_plan_gos`; `POST_SCAN_EFFECTIVE` alone isn't enough because the Go fallback rewrites it.
+
 ### Fix plan polling quirk
 
 The GPT service has two behaviors (documented in `poll_fix_plan`): it either blocks until ready (returns `guid=null, overall_status=available`) or returns immediately with a new `guid`. When `guid` expires (returns `null` but status ≠ `available`), the code re-issues a fresh request without a guid to get a new one.
