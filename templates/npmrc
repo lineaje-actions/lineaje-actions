@@ -1,0 +1,8 @@
+; Rendered by write_fix_config() in lineaje_scan_gh.py. Contains credentials -
+; written chmod 600 and never logged.
+;
+; Public packages resolve from npmjs; requests to the GOS registry use the
+; Artifactory token inherited by the verification hook.
+registry=https://registry.npmjs.org/
+//__SCOPED__:_authToken=${ARTIFACTORY_NPM_TOKEN}
+always-auth=true

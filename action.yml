@@ -85,9 +85,35 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python and Node.js source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests)"
     required: false
     default: "scan_only"
+
+  # ── Service endpoint overrides ──────────────────────────────────────────────-
+  identity_url:
+    description: "Override identity service base URL — token exchange (config key: LineajeAuthService)"
+    required: false
+    default: ''
+  scim_url:
+    description: "Override SCIM service base URL — scan job polling (config key: SCIMHost)"
+    required: false
+    default: ''
+  scm_url:
+    description: "Override SCM service base URL (config key: SCMHost)"
+    required: false
+    default: ''
+  notification_url:
+    description: "Override notification service base URL (config key: NotificationServiceHost)"
+    required: false
+    default: ''
+  data_service_url:
+    description: "Override data service base URL — vulnerability summary (config key: GraphQLServiceHost)"
+    required: false
+    default: ''
+  gpt_service_url:
+    description: "Override GPT service base URL — fix plan (config key: GPTServiceHost)"
+    required: false
+    default: ''
 
   # ── Scan behaviour ───────────────────────────────────────────────────────────
   fast_scan:
@@ -125,9 +151,14 @@ runs:
           echo "[error] 'image' input is required for image scan"
           exit 1
         fi
-        if [ "${{ inputs.post_scan }}" = "fix_plan" ]; then
+        if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ]; then
+          echo "[error] post_scan=fix_plan_gos_compat is only supported for source scans"
+          echo "         (veecli fix patches dependency manifests in a checked-out repo)"
+          exit 1
+        fi
+        if [ "${{ inputs.post_scan }}" != "scan_only" ]; then
           if [ -z "${{ inputs.metafiles }}" ]; then
-            echo "[error] 'metafiles' input is required for image scan with post_scan=fix_plan (path to Dockerfile)"
+            echo "[error] 'metafiles' input is required for image scan with post_scan=${{ inputs.post_scan }} (path to Dockerfile)"
             exit 1
           fi
           if [ ! -f "${{ inputs.metafiles }}" ]; then
@@ -149,8 +180,14 @@ runs:
           echo "[error] 'language_version' input is required for source scan"
           exit 1
         fi
-        if [ "${{ inputs.language }}" = "golang" ] && [ "${{ inputs.post_scan }}" = "fix_plan" ]; then
-          echo "[warn] fix_plan is not yet supported for Go — falling back to scan_only"
+        if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ] \
+          && [ "${{ inputs.language }}" != "python" ] \
+          && [ "${{ inputs.language }}" != "node" ]; then
+          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python and Node.js source scans"
+          exit 1
+        fi
+        if [ "${{ inputs.language }}" = "golang" ] && [ "${{ inputs.post_scan }}" != "scan_only" ]; then
+          echo "[warn] ${{ inputs.post_scan }} is not yet supported for Go — falling back to scan_only"
           echo "POST_SCAN_EFFECTIVE=scan_only" >> "$GITHUB_ENV"
         else
           echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
@@ -330,6 +367,7 @@ runs:
         echo "SRC_URL=${{ github.server_url }}/${{ github.repository }}" >> "$GITHUB_ENV"
         echo "MATCHING_REF=${{ inputs.matching_ref || github.head_ref || github.ref_name }}" >> "$GITHUB_ENV"
         echo "OUTPUT_DIR=${{ inputs.output_dir }}" >> "$GITHUB_ENV"
+        echo "OUTPUT_FIX_DIR=${{ inputs.output_dir }}/fix" >> "$GITHUB_ENV"
 
     # ── 11. Run Lineaje scan ──────────────────────────────────────────────────
     - name: Lineaje scan
@@ -358,6 +396,16 @@ runs:
           SCAN_ARGS+=(--org-name "${{ inputs.org_name }}")
         fi
 
+        # Service endpoint overrides — only forwarded when set, so an unset input
+        # leaves the config-orig.json value untouched. These are baked into
+        # config.json by build_config because veecli reads several of them itself.
+        [ -n "${{ inputs.identity_url }}" ]     && SCAN_ARGS+=(--auth-service      "${{ inputs.identity_url }}")
+        [ -n "${{ inputs.scim_url }}" ]         && SCAN_ARGS+=(--scim-host         "${{ inputs.scim_url }}")
+        [ -n "${{ inputs.scm_url }}" ]          && SCAN_ARGS+=(--scm-host          "${{ inputs.scm_url }}")
+        [ -n "${{ inputs.notification_url }}" ] && SCAN_ARGS+=(--notification-host "${{ inputs.notification_url }}")
+        [ -n "${{ inputs.data_service_url }}" ] && SCAN_ARGS+=(--data-host         "${{ inputs.data_service_url }}")
+        [ -n "${{ inputs.gpt_service_url }}" ]  && SCAN_ARGS+=(--gpt-host          "${{ inputs.gpt_service_url }}")
+
         if [ "${{ inputs.scan_type }}" = "image" ]; then
           SCAN_ARGS+=(
             --image             "${{ inputs.image }}"
@@ -374,8 +422,14 @@ runs:
           )
         fi
 
-        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" = "scan_only" ]; then
+        # POST_SCAN_EFFECTIVE is set by step 1b (source scans) and may differ from
+        # inputs.post_scan — Go falls back to scan_only. Image scans never set it.
+        EFFECTIVE="${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}"
+
+        if [ "$EFFECTIVE" = "scan_only" ]; then
           SCAN_ARGS+=(--skip-fix-plan)
+        elif [ "$EFFECTIVE" = "fix_plan_gos_compat" ]; then
+          SCAN_ARGS+=(--gos-fix-plan --output-fix-dir "$OUTPUT_FIX_DIR")
         fi
 
         if [ "${{ inputs.fast_scan }}" = "true" ]; then
@@ -384,16 +438,28 @@ runs:
 
         SCAN_ARGS+=(--gos-mode "${{ inputs.gos_mode }}")
 
-        # Pipe stdout+stderr through tee so logs still stream to the console AND are
-        # captured for post-processing. PIPESTATUS[0] preserves the Python exit code.
+        # Merge stdout+stderr before relaying complete lines to both the console and
+        # the scan log. Unlike tee's arbitrary byte chunks, this keeps each GitHub
+        # Actions log record intact. PIPESTATUS[0] preserves the Python exit code.
         SCAN_LOG="/tmp/lineaje-scan.log"
-        python3 -u "${{ github.action_path }}/lineaje_scan_gh.py" "${SCAN_ARGS[@]}" 2>&1 | tee "$SCAN_LOG"
+        : > "$SCAN_LOG"
+        python3 -u "${{ github.action_path }}/lineaje_scan_gh.py" "${SCAN_ARGS[@]}" 2>&1 |
+          while IFS= read -r line || [ -n "$line" ]; do
+            printf '%s\n' "$line"
+            printf '%s\n' "$line" >> "$SCAN_LOG"
+          done
         SCAN_EXIT=${PIPESTATUS[0]}
 
         # Detect fix plan artifact
         ARTIFACT_FOUND=false
         PATCHED_DOCKERFILE=""
-        if [ "${POST_SCAN_EFFECTIVE:-${{ inputs.post_scan }}}" != "scan_only" ]; then
+        if [ "$EFFECTIVE" = "fix_plan_gos_compat" ]; then
+          # veecli fix writes patched manifests into OUTPUT_FIX_DIR preserving the
+          # repo's directory layout, so search recursively rather than at depth 1.
+          if [ -d "$OUTPUT_FIX_DIR" ] && [ -n "$(find "$OUTPUT_FIX_DIR" -type f -print -quit)" ]; then
+            ARTIFACT_FOUND=true
+          fi
+        elif [ "$EFFECTIVE" != "scan_only" ]; then
           if [ "${{ inputs.scan_type }}" = "image" ]; then
             PATCHED_DOCKERFILE=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'Dockerfile*' | head -1)
             [ -n "$PATCHED_DOCKERFILE" ] && ARTIFACT_FOUND=true
@@ -418,6 +484,7 @@ runs:
 
         echo "fix_artifact_uploaded=$ARTIFACT_FOUND" >> "$GITHUB_OUTPUT"
         echo "patched_dockerfile=$PATCHED_DOCKERFILE" >> "$GITHUB_OUTPUT"
+        echo "post_scan_effective=$EFFECTIVE" >> "$GITHUB_OUTPUT"
         echo "ech_count=${ECH_COUNT}" >> "$GITHUB_OUTPUT"
         echo "premium_only=${PREMIUM_ONLY}" >> "$GITHUB_OUTPUT"
 
@@ -434,7 +501,7 @@ runs:
 
     # ── 13. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
     - name: Upload fix plan artifacts
-      if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
+      if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: lineaje-fix-plan
@@ -447,4 +514,26 @@ runs:
           ${{ inputs.output_dir }}/pyproject.toml
           ${{ inputs.output_dir }}/package.json
           ${{ inputs.output_dir }}/package-lock.json
+        if-no-files-found: ignore
+
+    # ── 14. Upload raw fix plan response (normal fix_plan mode) ────────────────
+    - name: Upload raw fix plan
+      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lineaje-raw-fix-plan
+        path: ${{ inputs.output_dir }}/raw-fix-plan.json
+        if-no-files-found: ignore
+
+    # ── 15. Upload GOS fix artifacts (source scan: whatever veecli fix wrote) ──
+    # Unlike step 13's fixed filename list, veecli fix mirrors the repo layout into
+    # the fix dir, so the whole directory is uploaded.
+    - name: Upload GOS fix artifacts
+      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lineaje-fix-plan
+        path: |
+          ${{ inputs.output_dir }}/fix
+          !${{ inputs.output_dir }}/fix/**/node_modules/**
         if-no-files-found: ignore

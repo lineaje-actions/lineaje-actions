@@ -1,13 +1,22 @@
 # Lineaje Scan Action
 
-Scan container images and source code for vulnerabilities using [Lineaje](https://www.lineaje.com/).
+Scan container images and source repositories for vulnerabilities directly in GitHub Actions using [Lineaje](https://www.lineaje.com/).
 
-Every run prints a vulnerability summary. With `post_scan: fix_plan`, the action also generates a fix plan and uploads the patched artifact to the workflow run:
+The action installs the required scanner and language runtime, submits the scan, waits for analysis, and prints an Exploited, Critical, and High vulnerability summary in the job log. Optional post-scan modes can also generate patched artifacts:
 
 - **Image scan** → patched `Dockerfile`
-- **Source scan** → patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.)
+- **Supported source scan with `fix_plan`** → patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.)
+- **Any normal `fix_plan` run** → complete fix-plan response as `raw-fix-plan.json`
+- **Python or Node.js source scan with `fix_plan_gos_compat`** → Fortknox package availability and installation compatibility checks, with verified candidate manifests uploaded as artifacts
 
-For image scans, rebuild from the patched Dockerfile and re-invoke the action in `scan_only` mode to verify fixes — see [Rebuild & rescan workflow](#rebuild--rescan-workflow).
+### Compatibility at a glance
+
+| Scan target | Supported ecosystems | `scan_only` | `fix_plan` | `fix_plan_gos_compat` |
+|---|---|:---:|:---:|:---:|
+| Container image | Any containerized workload | ✓ | ✓ | — |
+| Source repository | Java, Python, Node.js, .NET, Go, Rust | ✓ | Java, Python, Node.js, .NET, Rust | Python, Node.js |
+
+Linux runners are required. For image scans, rebuild from the patched Dockerfile and scan the rebuilt image to verify fixes — see [Rebuild & rescan workflow](#rebuild--rescan-workflow).
 
 ---
 
@@ -16,13 +25,11 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Usage examples](#usage-examples)
-  - [Multiple images in one job](#image-scan--multiple-images-in-one-job)
-  - [Source scan — .NET](#source-scan--net)
-  - [Source scan — Rust](#source-scan--rust)
 - [Rebuild & rescan workflow](#rebuild--rescan-workflow)
 - [Inputs](#inputs)
-- [Outputs](#outputs)
+- [Outputs and artifacts](#outputs-and-artifacts)
 - [`post_scan` modes](#post_scan-modes)
+  - [`fix_plan_gos_compat`](#fix_plan_gos_compat)
 - [Secrets](#secrets)
 - [Private Python packages](#private-python-packages)
 - [Registry authentication](#registry-authentication)
@@ -43,7 +50,14 @@ For image scans, rebuild from the patched Dockerfile and re-invoke the action in
 
 ## Quick start
 
+This minimal workflow builds and scans a local container image. The default `post_scan: scan_only` prints the vulnerability summary without generating a fix artifact.
+
 ```yaml
+name: Lineaje scan
+
+on:
+  workflow_dispatch:
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -56,16 +70,17 @@ jobs:
         with:
           scan_type: image
           image: myapp:latest
-          metafiles: Dockerfile
           lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
           org_name: dummy_org
 ```
+
+To generate a patched Dockerfile, add `post_scan: fix_plan` and `metafiles: Dockerfile`. For source scanning, skip the Docker build and provide `scan_type: source`, `language`, and `language_version`; see the examples below.
 
 ---
 
 ## Usage examples
 
-### Image scan — locally built image
+### Image scan — locally built image with fix plan
 
 ```yaml
 - run: docker build -t myapp:latest .
@@ -77,9 +92,10 @@ jobs:
     metafiles: Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
     org_name: dummy_org
+    post_scan: fix_plan
 ```
 
-### Image scan — pull from registry first
+### Image scan — registry image with fix plan
 
 ```yaml
 - uses: lineaje-actions/lineaje-actions@v1
@@ -90,6 +106,7 @@ jobs:
     metafiles: Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
     org_name: dummy_org
+    post_scan: fix_plan
 ```
 
 ### Image scan — scan only (no fix plan, no Dockerfile needed)
@@ -118,7 +135,6 @@ Use `version_prefix` to keep each image's scan distinct when scanning multiple i
     scan_type: image
     image: nginx-app:latest
     version_prefix: nginx
-    metafiles: docker/nginx/Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
     org_name: dummy_org
 
@@ -127,7 +143,6 @@ Use `version_prefix` to keep each image's scan distinct when scanning multiple i
     scan_type: image
     image: api-app:latest
     version_prefix: api
-    metafiles: docker/api/Dockerfile
     lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
     org_name: dummy_org
 ```
@@ -295,7 +310,6 @@ jobs:
         with:
           scan_type: image
           image: myapp:latest-patched
-          metafiles: Dockerfile
           lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
           org_name: dummy_org
           post_scan: scan_only
@@ -316,7 +330,7 @@ jobs:
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written |
-| `post_scan` | no | `scan_only` | `scan_only` or `fix_plan` (see [post_scan modes](#post_scan-modes)) |
+| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python and Node.js source scans. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 
@@ -340,32 +354,74 @@ jobs:
 
 ---
 
-## Outputs
+## Outputs and artifacts
 
 | Output | Type | Description |
 |---|---|---|
-| `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a fix plan artifact was produced and uploaded to the workflow run |
+| `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a patched artifact was produced and uploaded. The separate raw fix-plan response does not affect this output. |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
-| `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Zero means the image meets the gold criteria. Empty string if the vulnerability summary could not be fetched. |
+| `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Missing or unparsable counts default to zero, so check scan warnings before treating zero as a clean result. |
 | `premium_only` | `'true'` \| `'false'` | `true` when a fix plan was produced and every fix is **premium** type — fixes that must be requested from Lineaje before they become available. `false` when at least one **curated** fix exists (already available as-is and can be applied immediately by rebuilding), or when no fix plan was produced. |
 
 Artifact contents by scan type:
 
-| Scan type | Artifact name | Files |
-|---|---|---|
-| `image` | `patched-dockerfile` | Patched `Dockerfile` |
-| `source` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| Scan type | `post_scan` | Artifact name | Files |
+|---|---|---|---|
+| `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
+| `source` (except Go) | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| image or supported source | `fix_plan` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
+| Python or Node.js source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
+
+Normal `fix_plan` runs upload `lineaje-raw-fix-plan` whenever a fix-plan response is received, including responses with no available fixes. This artifact is not produced by `fix_plan_gos_compat`.
+
+Treat the raw response as scan data: it can include component details, vulnerability information, and temporary artifact URLs. Access and retention follow the repository's GitHub Actions artifact settings.
+
+Download the raw response later in the same job:
+
+```yaml
+- uses: actions/download-artifact@v4
+  with:
+    name: lineaje-raw-fix-plan
+    path: lineaje-results
+
+- run: jq . lineaje-results/raw-fix-plan.json
+```
 
 ---
 
 ## `post_scan` modes
 
-| Value | What happens |
-|---|---|
-| `scan_only` | Scan only — vulnerability summary printed, no fix plan |
-| `fix_plan` | Scan → generate fix plan → download patched artifact → upload as GitHub artifact |
+| Value | Scan types | What happens |
+|---|---|---|
+| `scan_only` | image · source | Scan only — vulnerability summary printed, no fix plan |
+| `fix_plan` | image · source except Go | Scan → generate fix plan → upload the raw response and any patched artifact |
+| `fix_plan_gos_compat` | Python and Node.js source only | Scan → generate fix plan → check package availability in Fortknox → verify installation compatibility → upload candidate manifests |
 
-For image scans the uploaded artifact is the patched `Dockerfile`. For source scans it is the patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.).
+With `fix_plan`, image scans upload a patched `Dockerfile`; supported source scans upload a patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.).
+
+### `fix_plan_gos_compat`
+
+`fix_plan` provides the generated manifest from the fix plan. `fix_plan_gos_compat` checks whether its suggested packages are available in the Lineaje Fortknox Artifactory and whether the resulting Python or Node.js manifests install successfully. It does not modify the checked-out repository or apply the fixes to the project. Verified candidate manifests are uploaded with the repository layout preserved, so a monorepo's per-module manifests remain in their own subdirectories.
+
+Because plan generation and Fortknox availability processing run asynchronously, this mode takes noticeably longer than `fix_plan`: the action waits for the fix plan, waits for candidate-manifest tasks, and then runs installation verification before uploading the results.
+
+```yaml
+- uses: lineaje-actions/lineaje-actions@v1
+  with:
+    scan_type: source
+    lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+    org_name: dummy_org
+    language: node
+    language_version: "18"
+    post_scan: fix_plan_gos_compat
+```
+
+Notes:
+
+- **Python and Node.js source scans only.** Other languages and image scans fail validation up front. Use `fix_plan` for image scans and supported source ecosystems; Go supports `scan_only` only.
+- **Python and Node.js candidate manifests are installation-verified before being uploaded.** Python installs discovered `requirements.txt` files in a temporary virtual environment. Node.js runs `npm install` for discovered `package.json` files using the generated GOS npm configuration and a temporary cache. Only the verifier matching the `language` input runs.
+- Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact. The action does not write them back into the checked-out repository.
+- To consume the fixes at build time, point your package manager at the GOS registry — the rebuilt versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
 
 ---
 
@@ -463,7 +519,6 @@ steps:
       scan_type: image
       image: myregistry.azurecr.io/myapp:latest
       image_source_type: registry
-      metafiles: Dockerfile
       lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
       org_name: dummy_org
 ```
@@ -491,11 +546,11 @@ Pass the **major version** via `language_version`. Maven and Gradle are bundled 
 | `18` | OpenJDK 18.0.2 |
 | `19` | OpenJDK 19.0.1 |
 | `20` | OpenJDK 20.0.2 |
-| `21` | OpenJDK 21.0.2 ⭐ LTS |
+| `21` | OpenJDK 21.0.2 (LTS) |
 | `22` | OpenJDK 22.0.2 |
 | `23` | OpenJDK 23.0.2 |
 | `24` | OpenJDK 24.0.2 |
-| `25` | OpenJDK 25.0.2 ⭐ LTS |
+| `25` | OpenJDK 25.0.2 (LTS) |
 
 **Maven:** 3.8.9 · **Gradle:** 4.9, 5.5.1, 5.6.4, 6.3, 6.9.1, 7.4.2, 7.5.1, 7.6.1, 8.0.2, 8.1.1, 8.2, 8.4, 8.6, 8.9
 
@@ -503,19 +558,37 @@ Pass the **major version** via `language_version`. Maven and Gradle are bundled 
 
 Pass the **minor version** via `language_version` (e.g. `3.12`).
 
-Supported: `3.6` · `3.7` · `3.8` · `3.9` · `3.10` · `3.11` · `3.12` · `3.13` · `3.14`
+| `language_version` | Python version |
+|---|---|
+| `3.6` | 3.6.15 |
+| `3.7` | 3.7.15 |
+| `3.8` | 3.8.15 |
+| `3.9` | 3.9.15 |
+| `3.10` | 3.10.8 |
+| `3.11` | 3.11.8 |
+| `3.12` | 3.12.9 |
+| `3.13` | 3.13.3 |
+| `3.14` | 3.14.5 |
 
 ### Node.js
 
 Pass the **major version** via `language_version` (e.g. `18`).
 
-Supported: `16` · `18` · `20` · `21` · `22` · `24` · `26`
+| `language_version` | Node.js version |
+|---|---|
+| `16` | 16.20.2 |
+| `18` | 18.19.0 |
+| `20` | 20.18.0 |
+| `21` | 21.4.0 |
+| `22` | 22.11.0 |
+| `24` | 24.15.0 |
+| `26` | 26.2.0 |
 
 ### Go
 
 Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
-> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` if set.
+> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` when it is set. `fix_plan_gos_compat` supports only Python and Node.js source scans.
 
 | `language_version` | Go version |
 |---|---|
@@ -531,7 +604,7 @@ Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mod
 
 ### .NET
 
-Pass the **minor version** via `language_version` (e.g. `8.0`).
+Pass the **SDK channel** via `language_version` (e.g. `8.0`). Unlike the pinned runtimes above, .NET SDK channels resolve at action runtime.
 
 Supported: `6.0` · `7.0` · `8.0` · `9.0` · `10.0`
 

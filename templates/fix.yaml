@@ -1,0 +1,26 @@
+# Rendered by write_fix_config() in lineaje_scan_gh.py into <veecli dir>/fix.yaml.
+# Double-underscore placeholders are substituted at write time.
+#
+# Only the keys that apply when a fix plan is applied WITHOUT a PR are present.
+# pull_request, reviewers and credentials are deliberately omitted - none take
+# effect in this mode, and credentials would put SCM tokens on the runner's disk.
+version: 1
+config:
+  - package-ecosystem: "default"
+    commit-author-name: "lineaje-autofix[bot]"
+    commit-author-email: "lineaje-autofix@lineaje.com"
+    commit-branch-prefix: "compat-check-fix-"
+    commit-message: |
+      [lineaje] Update {{.ComponentName}} to {{.FixedVersion}}
+
+      Fixes CVEs - {{.CVEList}}
+    verify-local-files-actions:
+      - run: "__VERIFY_SCRIPT__"
+        args:
+          - "--task-dir"
+          - $LOCAL_TASK_DIR
+          - "--language"
+          - "__LANGUAGE__"
+          - "--node-bin-dir"
+          - "__NODE_BIN_DIR__"
+        timeout_in_seconds: __TIMEOUT__
