@@ -30,12 +30,17 @@ The only runtime dependency for `lineaje_scan_gh.py` is the `requests` package; 
 
 ## Architecture
 
-### Two-file design
+### File layout
 
-The entire action is two files:
+Two files carry the logic:
 
 - **`action.yml`** — composite action definition. Handles: input validation, downloading `veecli` tarball, caching runtimes (`/opt/veecli/third_party/linux`), installing .NET, resolving env vars, then invoking `lineaje_scan_gh.py`. Captures stdout+stderr via `tee` to parse ECH counts after the script exits. Also detects and uploads fix-plan artifacts.
-- **`lineaje_scan_gh.py`** — Python orchestrator (~1400 lines). Does everything else.
+- **`lineaje_scan_gh.py`** — Python orchestrator. Does everything else.
+
+Plus assets it copies or renders at runtime, used only by `post_scan=fix_plan_gos_compat`:
+
+- **`lineaje-verify.sh`** — the verify hook, copied verbatim into the veecli dir. It receives `--language` from the rendered fix config and runs only that ecosystem's verifier: Python installs recursive `requirements.txt` files into a shared venv; Node runs `npm install` for recursive `package.json` files with a local cache and the generated npmrc. It exits 1 on installation failure and skips unsupported languages.
+- **`templates/{fix.yaml,npmrc,pip.conf}`** (the fix template renders to `fix.yml`/`fix.yaml`) — rendered by `_render_template()`, which substitutes `__KEY__` placeholders and **raises on any leftover placeholder**, so a renamed key fails loudly instead of producing config veecli silently misreads. Watch out for prose in template comments that looks like a placeholder — it trips the guard.
 
 ### Scan flow (both modes)
 
@@ -86,22 +91,35 @@ Runtimes are cached via `actions/cache@v4` keyed on `veecli-runtimes-<language>-
 | `GraphQLServiceHost` | Vulnerability summary (LQL query) |
 | `GPTServiceHost` | Fix plan generation (`/api/v1/explain`) |
 
-### `post_scan=fix_plan_gos` (source scans only)
+### `post_scan=fix_plan_gos_compat` (source scans only)
 
 A third post-scan mode layered on top of `fix_plan`. After the normal fix plan comes back, two extra steps run in `_run_fix_plan` (`gos=True`) instead of `download_artifacts`:
 
+0. `write_fix_config` writes the fix config to **four paths** — `fix.yml` and `fix.yaml`, in both `<veecli_dir>` and `~/veecli/` — plus three files the verify hook needs: `lineaje-verify.sh`, `lineaje-verify.npmrc`, and `lineaje-verify-pip.conf`. Only the fix.yaml keys that apply when applying **without a PR** are emitted — `pull_request`, `reviewers` and `credentials` are omitted, the last deliberately, since it would put SCM tokens on disk for no benefit.
+
+   `verify-local-files-actions` is always configured. veecli's Verify Local Files Agent runs it against a task's local task dir before copying patched files into the local workflow dir, and **a non-zero exit skips the copy and fails the agent** — hence two deliberate choices. First, the hook points at a script this action writes rather than a conventional path in the user's repo; a missing script would abort every patch. Second, the script is **blocking**: a manifest whose pins will not install is rejected rather than copied, since an uninstallable patch is not a usable one.
+
+  The script handles Python and Node explicitly based on the action's `language` input. Python finds all `requirements.txt` files recursively under `--task-dir` and installs them into a single shared venv. Node finds `package.json` files outside `node_modules`, runs `npm install` in each package directory, and shares a temporary cache across those installs. Other languages skip dependency verification.
+
+   The npmrc is why the registry configuration matters so much now that the hook blocks: GOS patches resolve to Lineaje-rebuilt versions like `helmet@2.3.0-lineaje-01` that exist **only** in the fortknox premium registry, so a plain `npm install` 404s and rejects exactly the patches this mode exists to produce. The npmrc is written even though veecli should already export `GOS_PREMIUM_*` into the hook's environment — npm reads a config file either way. Both the global and registry-scoped `_auth` forms are emitted; the exact form Artifactory wants is unverified. Python has no GOS index at all, so its side uses `pip_extra_index_url` (via `PIP_CONFIG_FILE`). Both credential files are `chmod 600`, and neither the token nor the npmrc contents are ever logged.
+
+   The four-path write exists because veecli reported `No verify local files script was configured in fix.yaml` while the known-good config on disk elsewhere is named **`fix.yml`**. Which name and directory it actually reads is still unconfirmed; the run log echoes the rendered config and lists every path written, so the next failure narrows it. Note the warning itself proves the Verify Local Files Agent exists in the binary — it only fires from that code path.
+
+  Note `GOS_PREMIUM_NPM_REGISTRY` is currently hardcoded to `fortknox.commercialdev.dev.veedna.com` and does **not** honour the `*_url` endpoint override inputs.
 1. `apply_fix_left_plan` POSTs to `/api/v1/explain` with `query="Apply fix left plan without pr"` and `metadata.components` set to the fix plan's `plan_details` **verbatim**. The backend checks each `suggested_purl` against the GOS artifactory (Lineaje-rebuilt versions like `pkg:npm/helmet@2.3.0-lineaje-01`) and queues patch tasks. This action never queries the artifactory directly and does no client-side filtering of `plan_details` — deliberately, so the filter can't drift from the backend's.
 
-   **This call is asynchronous and must be polled.** The first POST (no guid) returns a guid, `message="Request is being processed"`, and an empty `task_ids`. Subsequent POSTs repeat the *entire* body — same query, same `metadata.components` — plus that guid, until `task_ids` is populated and the message becomes `"Created tasks for AI Agents. Request is being processed"`. Returning early leaves step 2 with no tasks to wait on, so it would exit having patched nothing. The readiness check keys on `task_ids` being non-empty first and the message string second, since the wording is the likelier thing to drift. Guid expiry (`guid: null` mid-poll) is handled the same way `poll_fix_plan` does it — the next poll omits the guid to get a fresh handle.
+   **This call is asynchronous and must be polled.** The first POST (no guid) returns a guid, `message="Request is being processed"`, and an empty `task_ids`. Subsequent POSTs repeat the *entire* body — same query, same `metadata.components` — plus that guid, until `task_ids` is populated and the message becomes `"Created tasks for AI Agents. Request is being processed"`. Returning early leaves step 2 with no tasks to wait on, so it would exit having patched nothing. The readiness check keys on `task_ids` being non-empty first and the message string second, since the wording is the likelier thing to drift — at least three pending wordings exist (`Request is being processed`, `Request is still processing. Please try again later.`, and the ready message, which contains the first). Completion-with-no-tasks is matched against an explicit allowlist (`APPLY_FIX_DONE_MESSAGES`); do **not** infer it from the absence of a known pending phrase, which is how an unseen wording once made the poll give up on its first tick and report "nothing matched" for a plan that was still being built. Unknown wording must keep polling. Guid expiry (`guid: null` mid-poll) is handled the same way `poll_fix_plan` does it — the next poll omits the guid to get a fresh handle.
 2. `run_veecli_fix` runs `veecli fix --poll-tasks --local-repo-dir <src> --output-fix-dir <out>/fix --sbom-id <id>`, which blocks on those tasks and writes patched manifests preserving the repo layout.
 
 Both steps run inside `_run_fix_plan`'s existing try/except, so failures warn rather than fail the scan — hence `_run_veecli` gained a `fatal` parameter (`RuntimeError` instead of `sys.exit`, since `SystemExit` escapes `except Exception`).
 
-Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string comparisons ([step 1](action.yml) metafiles validation, step 1b Go fallback) that silently did the wrong thing for a new mode value — both are now `!= "scan_only"`. Step 11 exports a `post_scan_effective` step output (undeclared in `outputs:`, internal use only) so the two mutually-exclusive source upload steps can tell `fix_plan` from `fix_plan_gos`; `POST_SCAN_EFFECTIVE` alone isn't enough because the Go fallback rewrites it.
+Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string comparisons ([step 1](action.yml) metafiles validation, step 1b Go fallback) that silently did the wrong thing for a new mode value — both are now `!= "scan_only"`. Step 11 exports a `post_scan_effective` step output (undeclared in `outputs:`, internal use only) so the two mutually-exclusive source upload steps can tell `fix_plan` from `fix_plan_gos_compat`; `POST_SCAN_EFFECTIVE` alone isn't enough because the Go fallback rewrites it.
 
 ### Fix plan polling quirk
 
 The GPT service has two behaviors (documented in `poll_fix_plan`): it either blocks until ready (returns `guid=null, overall_status=available`) or returns immediately with a new `guid`. When `guid` expires (returns `null` but status ≠ `available`), the code re-issues a fresh request without a guid to get a new one.
+
+For normal `post_scan=fix_plan`, `_run_fix_plan` writes the complete response to `<output_dir>/raw-fix-plan.json` before handling no-fix responses or downloading patched artifacts. `action.yml` uploads it separately as `lineaje-raw-fix-plan`; it does not affect the existing `fix_artifact_uploaded` output. The compatibility mode does not write this raw artifact.
 
 ### Python source scan requirements
 

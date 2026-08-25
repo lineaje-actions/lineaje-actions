@@ -58,11 +58,29 @@ on:
         required: false
       pip_extra_index_url:
         required: false
+      identity_url:
+        description: "Endpoint override: identity service (leave all six blank for prod)"
+        required: false
+      scim_url:
+        description: "Endpoint override: SCIM service"
+        required: false
+      scm_url:
+        description: "Endpoint override: SCM service"
+        required: false
+      notification_url:
+        description: "Endpoint override: notification service"
+        required: false
+      data_service_url:
+        description: "Endpoint override: data service"
+        required: false
+      gpt_service_url:
+        description: "Endpoint override: GPT service (fix plan)"
+        required: false
       post_scan:
         required: false
         default: "scan_only"
         type: choice
-        options: [scan_only, fix_plan, fix_plan_gos]
+        options: [scan_only, fix_plan, fix_plan_gos_compat]
       fast_scan:
         required: false
         default: "true"
@@ -99,6 +117,12 @@ jobs:
           language_version:           ${{ inputs.language_version }}
           matching_ref:               ${{ inputs.matching_ref }}
           pip_extra_index_url:        ${{ inputs.pip_extra_index_url }}
+          identity_url:               ${{ inputs.identity_url }}
+          scim_url:                   ${{ inputs.scim_url }}
+          scm_url:                    ${{ inputs.scm_url }}
+          notification_url:           ${{ inputs.notification_url }}
+          data_service_url:           ${{ inputs.data_service_url }}
+          gpt_service_url:            ${{ inputs.gpt_service_url }}
           post_scan:                  ${{ inputs.post_scan }}
           fast_scan:                  ${{ inputs.fast_scan }}
           gos_mode:                   ${{ inputs.gos_mode }}
