@@ -23,7 +23,14 @@
 # non-zero exit makes veecli skip the copy and fail the agent.
 #
 # Usage:
-#   ./lineaje-verify.sh --task-dir DIR --language python|node [--node-bin-dir DIR]
+#   ./lineaje-verify.sh --task-dir DIR --language python|node [--node-bin-dir DIR] \
+#       [--connect-to-fortknox true|false]
+#
+# --connect-to-fortknox false (default true) makes the node case check
+# package.json against the public npm registry instead of the Fortknox GOS
+# premium registry, so Lineaje-rebuilt (-lineaje-N) packages fail to resolve
+# and their patches are rejected. No effect on the python case, which never
+# used Fortknox.
 #
 # Falls back to $LOCAL_TASK_DIR then $PWD when --task-dir is absent, so it works
 # both under veecli's Verify Local Files Agent and when run by hand. Unrecognised
@@ -96,11 +103,13 @@ NPM_CONFIG="${SCRIPT_DIR}/lineaje-verify.npmrc"
 REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
+CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --task-dir) REPO_ROOT="${2:-}"; shift 2 ;;
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
+        --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
     esac
 done
@@ -185,19 +194,24 @@ case "$LANGUAGE" in
         if [[ -n "$NODE_BIN_DIR" ]]; then
             export PATH="${NODE_BIN_DIR}:${PATH}"
         fi
-        if [[ -f "$NPM_CONFIG" ]]; then
-            export NPM_CONFIG_USERCONFIG="$NPM_CONFIG"
-            log_info "Using npm configuration: ${NPM_CONFIG}"
-        fi
         if ! command -v npm >/dev/null 2>&1; then
             log_error "npm not found (node bin directory: ${NODE_BIN_DIR:-not provided})."
             exit 1
         fi
-        if [[ -z "${GOS_PREMIUM_NPM_REGISTRY:-}" ]]; then
-            log_error "GOS_PREMIUM_NPM_REGISTRY is not set."
-            exit 1
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            if [[ -f "$NPM_CONFIG" ]]; then
+                export NPM_CONFIG_USERCONFIG="$NPM_CONFIG"
+                log_info "Using npm configuration: ${NPM_CONFIG}"
+            fi
+            if [[ -z "${GOS_PREMIUM_NPM_REGISTRY:-}" ]]; then
+                log_error "GOS_PREMIUM_NPM_REGISTRY is not set."
+                exit 1
+            fi
+            NPM_REGISTRY="${GOS_PREMIUM_NPM_REGISTRY%/}/"
+        else
+            NPM_REGISTRY="https://registry.npmjs.org/"
+            log_info "connect_to_fortknox=false — using the public npm registry; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
         fi
-        NPM_REGISTRY="${GOS_PREMIUM_NPM_REGISTRY%/}/"
         log_info "Using npm registry: ${NPM_REGISTRY}"
 
         NPM_CACHE_DIR="${WORKDIR}/npm-cache"

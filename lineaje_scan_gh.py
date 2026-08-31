@@ -1636,6 +1636,7 @@ def _node_bin_dir(version: str) -> str:
 
 def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe",
                      language: str = "", language_version: str = "",
+                     connect_to_fortknox: bool = True,
                      timeout_seconds: int = VERIFY_TIMEOUT_SECONDS) -> Path:
     """Write fix.yaml and the verify hook's script and credentials into the veecli dir.
 
@@ -1647,16 +1648,24 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
     would fail the agent and skip the copy for everyone.
 
     The hook is blocking: a patched manifest whose pins cannot be installed is
-    rejected rather than copied, by exiting non-zero.
+    rejected rather than copied, by exiting non-zero. connect_to_fortknox=False
+    relies on that: the verify hook is told (via fix.yaml's --connect-to-fortknox
+    arg) to check Node.js manifests against the public npm registry instead of
+    Fortknox, so any patch that needed a Lineaje-rebuilt version fails to
+    install and is rejected rather than uploaded. No effect on Python, whose
+    verification never used Fortknox.
     """
     veecli_dir = Path(veecli_path).parent
 
     # npmrc and pip.conf carry credentials — keep them off other users' reads.
     npmrc = veecli_dir / VERIFY_NPMRC_NAME
-    if token:
+    if connect_to_fortknox and token:
         npmrc.write_text(_npmrc_content(token, gos_mode))
         npmrc.chmod(0o600)
         log("info", f"Wrote {npmrc} (GOS premium npm registry, {gos_mode} mode)")
+    elif not connect_to_fortknox:
+        log("info", "connect_to_fortknox=false — skipping npmrc; verify hook will check "
+                    "Node.js manifests against the public npm registry only")
     else:
         log("warn", "No CLI token available — skipping npmrc; "
                     "npm install in the verify hook will not resolve lineaje-rebuilt versions")
@@ -1681,6 +1690,7 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         VERIFY_SCRIPT=verify_script,
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
+        CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
 
@@ -1735,6 +1745,7 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
                   gos: bool = False, veecli: str = "", src_folder: str = "",
                   output_fix_dir: str = "", cli_token: str = "", gos_mode: str = "observe",
                   language: str = "", language_version: str = "",
+                  connect_to_fortknox: bool = True,
                   apply_poll_interval: int = 20, apply_max_attempts: int = 60):
     """Orchestrate gos plan → fix plan request → poll → print → download.
 
@@ -1780,7 +1791,8 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
             log("warn", "Fix plan returned no components — nothing to apply, skipping veecli fix")
             return
 
-        write_fix_config(veecli, cli_token, gos_mode, language, language_version)
+        write_fix_config(veecli, cli_token, gos_mode, language, language_version,
+                         connect_to_fortknox=connect_to_fortknox)
         applied = apply_fix_left_plan(
             gpt_host, token, sbom_id, plan_details,
             poll_interval=apply_poll_interval,
@@ -1868,6 +1880,12 @@ def main():
                             "download patched manifests (Python and Node.js source scans only)")
     parser.add_argument("--output-fix-dir", default="",
                         help="Where `veecli fix` writes patched manifests (default: <output-dir>/fix)")
+    parser.add_argument("--no-connect-to-fortknox", action="store_true", default=False,
+                        help="In --gos-fix-plan mode, never contact the Fortknox/GOS premium "
+                            "registry during verification — Node.js candidate manifests are "
+                            "checked against the public npm registry only, so Lineaje-rebuilt "
+                            "packages fail to resolve and are excluded from what gets uploaded. "
+                            "No effect on Python verification, which doesn't use Fortknox.")
     parser.add_argument("--apply-fix-poll-interval", type=int, default=20,
                         help="Seconds between polls while the GPT service queues patch tasks (default: 20)")
     parser.add_argument("--apply-fix-max-attempts", type=int, default=60,
@@ -2093,6 +2111,7 @@ def main():
             gos_mode=args.gos_mode,
             language=args.language,
             language_version=args.language_version,
+            connect_to_fortknox=not args.no_connect_to_fortknox,
             apply_poll_interval=args.apply_fix_poll_interval,
             apply_max_attempts=args.apply_fix_max_attempts,
         )

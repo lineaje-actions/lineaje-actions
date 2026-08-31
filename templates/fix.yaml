@@ -23,4 +23,6 @@ config:
           - "__LANGUAGE__"
           - "--node-bin-dir"
           - "__NODE_BIN_DIR__"
+          - "--connect-to-fortknox"
+          - "__CONNECT_TO_FORTKNOX__"
         timeout_in_seconds: __TIMEOUT__

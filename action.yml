@@ -88,6 +88,10 @@ inputs:
     description: "scan_only | fix_plan | fix_plan_gos_compat (Python and Node.js source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests)"
     required: false
     default: "scan_only"
+  connect_to_fortknox:
+    description: "[fix_plan_gos_compat only] When false, the compat check only ever suggests publicly available package versions — Lineaje-rebuilt (premium) packages are excluded. Default true."
+    required: false
+    default: "true"
 
   # ── Service endpoint overrides ──────────────────────────────────────────────-
   identity_url:
@@ -430,6 +434,9 @@ runs:
           SCAN_ARGS+=(--skip-fix-plan)
         elif [ "$EFFECTIVE" = "fix_plan_gos_compat" ]; then
           SCAN_ARGS+=(--gos-fix-plan --output-fix-dir "$OUTPUT_FIX_DIR")
+          if [ "${{ inputs.connect_to_fortknox }}" = "false" ]; then
+            SCAN_ARGS+=(--no-connect-to-fortknox)
+          fi
         fi
 
         if [ "${{ inputs.fast_scan }}" = "true" ]; then

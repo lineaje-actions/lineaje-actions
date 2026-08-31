@@ -333,6 +333,7 @@ jobs:
 | `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python and Node.js source scans. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
+| `connect_to_fortknox` | no | `true` | `fix_plan_gos_compat` only — when `false`, the compat check only ever suggests publicly available package versions; Lineaje-rebuilt packages are excluded. See [`fix_plan_gos_compat`](#fix_plan_gos_compat). |
 
 ### Image scan inputs
 
@@ -422,6 +423,7 @@ Notes:
 - **Python and Node.js candidate manifests are installation-verified before being uploaded.** Python installs discovered `requirements.txt` files in a temporary virtual environment. Node.js runs `npm install` for discovered `package.json` files using the generated GOS npm configuration and a temporary cache. Only the verifier matching the `language` input runs.
 - Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact. The action does not write them back into the checked-out repository.
 - To consume the fixes at build time, point your package manager at the GOS registry — the rebuilt versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
+- **`connect_to_fortknox: false` excludes Lineaje-rebuilt packages entirely.** Only fixes using publicly available package versions are suggested and uploaded; any patch that would have needed a Lineaje-rebuilt (premium) package is dropped.
 
 ---
 
