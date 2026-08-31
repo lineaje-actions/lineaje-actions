@@ -6,7 +6,7 @@ The action installs the required scanner and language runtime, submits the scan,
 
 - **Image scan** → patched `Dockerfile`
 - **Supported source scan with `fix_plan`** → patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.)
-- **Any normal `fix_plan` run** → complete fix-plan response as `raw-fix-plan.json`
+- **Any `fix_plan` or `fix_plan_gos_compat` run** → complete fix-plan response as `raw-fix-plan.json`
 - **Python or Node.js source scan with `fix_plan_gos_compat`** → Fortknox package availability and installation compatibility checks, with verified candidate manifests uploaded as artifacts
 
 ### Compatibility at a glance
@@ -370,10 +370,10 @@ Artifact contents by scan type:
 |---|---|---|---|
 | `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
 | `source` (except Go) | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
-| image or supported source | `fix_plan` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
+| image or supported source | `fix_plan` or `fix_plan_gos_compat` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
 | Python or Node.js source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
 
-Normal `fix_plan` runs upload `lineaje-raw-fix-plan` whenever a fix-plan response is received, including responses with no available fixes. This artifact is not produced by `fix_plan_gos_compat`.
+`lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
 
 Treat the raw response as scan data: it can include component details, vulnerability information, and temporary artifact URLs. Access and retention follow the repository's GitHub Actions artifact settings.
 

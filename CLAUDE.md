@@ -121,7 +121,7 @@ Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string com
 
 The GPT service has two behaviors (documented in `poll_fix_plan`): it either blocks until ready (returns `guid=null, overall_status=available`) or returns immediately with a new `guid`. When `guid` expires (returns `null` but status ≠ `available`), the code re-issues a fresh request without a guid to get a new one.
 
-For normal `post_scan=fix_plan`, `_run_fix_plan` writes the complete response to `<output_dir>/raw-fix-plan.json` before handling no-fix responses or downloading patched artifacts. `action.yml` uploads it separately as `lineaje-raw-fix-plan`; it does not affect the existing `fix_artifact_uploaded` output. The compatibility mode does not write this raw artifact.
+`_run_fix_plan` writes the complete response to `<output_dir>/raw-fix-plan.json` before handling no-fix responses or downloading/applying patched artifacts, for both `fix_plan` and `fix_plan_gos_compat`. `action.yml` uploads it separately as `lineaje-raw-fix-plan`; it does not affect the existing `fix_artifact_uploaded` output.
 
 ### Python source scan requirements
 

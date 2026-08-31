@@ -1493,7 +1493,7 @@ def download_artifacts(data: dict, output_dir: str = "."):
 
 
 def write_raw_fix_plan(data: dict, output_dir: str = ".") -> Path:
-    """Persist the unmodified fix-plan response for normal fix_plan runs."""
+    """Persist the unmodified fix-plan response, for fix_plan and fix_plan_gos_compat runs alike."""
     destination = Path(output_dir) / "raw-fix-plan.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(data, indent=2) + "\n")
@@ -1773,8 +1773,7 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
         overall_status = fix_data.get("meta_data", {}).get("overall_status", "")
         plan_details   = fix_data.get("meta_data", {}).get("plan_details", [])
 
-        if not gos:
-            write_raw_fix_plan(fix_data, output_dir=output_dir)
+        write_raw_fix_plan(fix_data, output_dir=output_dir)
 
         if overall_status == "available" and not plan_details:
             log("info", fix_data.get("answer") or "No fixes available.")

@@ -523,9 +523,9 @@ runs:
           ${{ inputs.output_dir }}/package-lock.json
         if-no-files-found: ignore
 
-    # ── 14. Upload raw fix plan response (normal fix_plan mode) ────────────────
+    # ── 14. Upload raw fix plan response (fix_plan and fix_plan_gos_compat) ─────
     - name: Upload raw fix plan
-      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan'
+      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat'
       uses: actions/upload-artifact@v4
       with:
         name: lineaje-raw-fix-plan
