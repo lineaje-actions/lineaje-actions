@@ -1775,6 +1775,15 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
 
         write_raw_fix_plan(fix_data, output_dir=output_dir)
 
+        if gos and not connect_to_fortknox:
+            excluded = [p for p in plan_details if "-lineaje-" in p.get("suggested_purl", "")]
+            if excluded:
+                plan_details = [p for p in plan_details if "-lineaje-" not in p.get("suggested_purl", "")]
+                fix_data.setdefault("meta_data", {})["plan_details"] = plan_details
+                cves = sorted({c for p in excluded for c in p.get("vuln_fixed", [])})
+                log("warn", f"connect_to_fortknox=false: dropped {len(excluded)} Fortknox-only fix "
+                            f"candidate(s) before submitting — affected CVEs: {', '.join(cves)}")
+
         if overall_status == "available" and not plan_details:
             log("info", fix_data.get("answer") or "No fixes available.")
             log("info", "No patch artifacts to download")
