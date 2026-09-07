@@ -361,8 +361,21 @@ jobs:
 |---|---|---|
 | `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a patched artifact was produced and uploaded. The separate raw fix-plan response does not affect this output. |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
+| `sbom_id` | `string` | Full Lineaje SBOM identifier produced by the scan. Empty if the scan did not produce one. |
 | `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Missing or unparsable counts default to zero, so check scan warnings before treating zero as a clean result. |
 | `premium_only` | `'true'` \| `'false'` | `true` when a fix plan was produced and every fix is **premium** type — fixes that must be requested from Lineaje before they become available. `false` when at least one **curated** fix exists (already available as-is and can be applied immediately by rebuilding), or when no fix plan was produced. |
+
+Reference the SBOM ID from a step with an `id`:
+
+```yaml
+- name: Lineaje scan
+  id: lineaje
+  uses: lineaje-actions/lineaje-actions@v1
+  with:
+    # ... scan inputs
+
+- run: echo "SBOM ID: ${{ steps.lineaje.outputs.sbom_id }}"
+```
 
 Artifact contents by scan type:
 
