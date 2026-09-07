@@ -374,7 +374,9 @@ Reference the SBOM ID from a step with an `id`:
   with:
     # ... scan inputs
 
-- run: echo "SBOM ID: ${{ steps.lineaje.outputs.sbom_id }}"
+- name: Print SBOM ID
+  run: |
+    echo "SBOM ID: ${{ steps.lineaje.outputs.sbom_id }}"
 ```
 
 Artifact contents by scan type:
@@ -387,6 +389,8 @@ Artifact contents by scan type:
 | Python or Node.js source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
 
 `lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
+
+Before artifacts are uploaded, the action prints a package-status table to the job log and GitHub job summary. It includes each package's current and suggested coordinates, package type (`curated`, `premium`, or `rebuild`), and availability status.
 
 Treat the raw response as scan data: it can include component details, vulnerability information, and temporary artifact URLs. Access and retention follow the repository's GitHub Actions artifact settings.
 
