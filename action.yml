@@ -544,7 +544,7 @@ runs:
                 return str(value).lower()
             return str(value).replace("\n", " ")
 
-        headers = ["Package", "Current", "Fix", "Type", "Status", "Compatible"]
+        headers = ["Package", "Current", "Fix", "Type", "Status"]
         rows = []
         for plan in plans:
             rows.append([
@@ -553,7 +553,6 @@ runs:
                 text(plan.get("suggested_purl") or plan.get("fix_version")),
                 text(plan.get("type")),
                 text(plan.get("status")),
-                text(plan.get("is_compatible")),
             ])
 
         widths = [max(len(headers[index]), *(len(row[index]) for row in rows))
