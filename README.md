@@ -388,6 +388,8 @@ Artifact contents by scan type:
 
 `lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
 
+Before artifacts are uploaded, the action prints a package-status table to the job log and GitHub job summary. It includes each package's current and suggested coordinates, package type (`curated`, `premium`, or `rebuild`), availability status, and compatibility result.
+
 Treat the raw response as scan data: it can include component details, vulnerability information, and temporary artifact URLs. Access and retention follow the repository's GitHub Actions artifact settings.
 
 Download the raw response later in the same job:

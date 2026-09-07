@@ -502,7 +502,83 @@ runs:
 
         [ "$SCAN_EXIT" -eq 0 ] || exit "$SCAN_EXIT"
 
-    # ── 12. Upload fix plan artifact (image scan: patched Dockerfile) ─────────
+    # ── 12. Print package status from the fix plan ────────────────────────────
+    - name: Print fix plan package status
+      if: steps.lineaje_scan.outputs.post_scan_effective != 'scan_only'
+      shell: bash
+      env:
+        RAW_FIX_PLAN: ${{ inputs.output_dir }}/raw-fix-plan.json
+      run: |
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        from urllib.parse import unquote
+
+        plan_path = Path(os.environ["RAW_FIX_PLAN"])
+        if not plan_path.is_file():
+            print(f"[info] No raw fix plan found at {plan_path}; package status unavailable")
+            raise SystemExit(0)
+
+        try:
+            data = json.loads(plan_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"[warn] Could not read package status from {plan_path}: {error}")
+            raise SystemExit(0)
+
+        meta = data.get("meta_data") or {}
+        plans = meta.get("plan_details") or []
+        if not plans:
+            print("[info] Fix plan contains no package recommendations")
+            raise SystemExit(0)
+
+        def package_name(purl):
+            value = unquote(str(purl or "")).split("?", 1)[0].split("#", 1)[0]
+            value = value.partition("/")[2]
+            return value.rsplit("@", 1)[0] or "?"
+
+        def text(value, default="?"):
+            if value is None or value == "":
+                return default
+            if isinstance(value, bool):
+                return str(value).lower()
+            return str(value).replace("\n", " ")
+
+        headers = ["Package", "Current", "Fix", "Type", "Status", "Compatible"]
+        rows = []
+        for plan in plans:
+            rows.append([
+                package_name(plan.get("current_purl")),
+                text(plan.get("current_purl")),
+                text(plan.get("suggested_purl") or plan.get("fix_version")),
+                text(plan.get("type")),
+                text(plan.get("status")),
+                text(plan.get("is_compatible")),
+            ])
+
+        widths = [max(len(headers[index]), *(len(row[index]) for row in rows))
+                  for index in range(len(headers))]
+        print("Fix plan package status")
+        print(" | ".join(value.ljust(widths[index]) for index, value in enumerate(headers)))
+        print("-+-".join("-" * width for width in widths))
+        for row in rows:
+            print(" | ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            def markdown(value):
+                return value.replace("|", "\\|")
+
+            with open(summary_path, "a", encoding="utf-8") as summary:
+                summary.write("## Lineaje fix plan package status\n\n")
+                summary.write(f"Overall status: **{text(meta.get('overall_status'))}**\n\n")
+                summary.write("| " + " | ".join(headers) + " |\n")
+                summary.write("| " + " | ".join("---" for _ in headers) + " |\n")
+                for row in rows:
+                    summary.write("| " + " | ".join(markdown(value) for value in row) + " |\n")
+        PY
+
+    # ── 13. Upload fix plan artifact (image scan: patched Dockerfile) ─────────
     - name: Upload patched Dockerfile
       if: inputs.scan_type == 'image' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
@@ -511,7 +587,7 @@ runs:
         path: ${{ inputs.output_dir }}/Dockerfile*
         if-no-files-found: ignore
 
-    # ── 13. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
+    # ── 14. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
     - name: Upload fix plan artifacts
       if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
@@ -528,7 +604,7 @@ runs:
           ${{ inputs.output_dir }}/package-lock.json
         if-no-files-found: ignore
 
-    # ── 14. Upload raw fix plan response (fix_plan and fix_plan_gos_compat) ─────
+    # ── 15. Upload raw fix plan response (fix_plan and fix_plan_gos_compat) ─────
     - name: Upload raw fix plan
       if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat'
       uses: actions/upload-artifact@v4
@@ -537,7 +613,7 @@ runs:
         path: ${{ inputs.output_dir }}/raw-fix-plan.json
         if-no-files-found: ignore
 
-    # ── 15. Upload GOS fix artifacts (source scan: whatever veecli fix wrote) ──
+    # ── 16. Upload GOS fix artifacts (source scan: whatever veecli fix wrote) ──
     # Unlike step 13's fixed filename list, veecli fix mirrors the repo layout into
     # the fix dir, so the whole directory is uploaded.
     - name: Upload GOS fix artifacts
