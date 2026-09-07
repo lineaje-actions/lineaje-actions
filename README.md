@@ -374,7 +374,9 @@ Reference the SBOM ID from a step with an `id`:
   with:
     # ... scan inputs
 
-- run: echo "SBOM ID: ${{ steps.lineaje.outputs.sbom_id }}"
+- name: Print SBOM ID
+  run: |
+    echo "SBOM ID: ${{ steps.lineaje.outputs.sbom_id }}"
 ```
 
 Artifact contents by scan type:
