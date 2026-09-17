@@ -6,15 +6,16 @@ The action installs the required scanner and language runtime, submits the scan,
 
 - **Image scan** → patched `Dockerfile`
 - **Supported source scan with `fix_plan`** → patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.)
-- **Any `fix_plan` or `fix_plan_gos_compat` run** → complete fix-plan response as `raw-fix-plan.json`
+- **Any `fix_plan`, `fix_plan_gos_compat`, or `apply_plan` run** → complete fix-plan response as `raw-fix-plan.json`
 - **Python or Node.js source scan with `fix_plan_gos_compat`** → Fortknox package availability and installation compatibility checks, with verified candidate manifests uploaded as artifacts
+- **Supported source scan with `apply_plan`** → `fix_plan`'s artifact, plus a remediation pull request opened directly against the repository
 
 ### Compatibility at a glance
 
-| Scan target | Supported ecosystems | `scan_only` | `fix_plan` | `fix_plan_gos_compat` |
-|---|---|:---:|:---:|:---:|
-| Container image | Any containerized workload | ✓ | ✓ | — |
-| Source repository | Java, Python, Node.js, .NET, Go, Rust | ✓ | Java, Python, Node.js, .NET, Rust | Python, Node.js |
+| Scan target | Supported ecosystems | `scan_only` | `fix_plan` | `fix_plan_gos_compat` | `apply_plan` |
+|---|---|:---:|:---:|:---:|:---:|
+| Container image | Any containerized workload | ✓ | ✓ | — | falls back to `fix_plan` |
+| Source repository | Java, Python, Node.js, .NET, Go, Rust | ✓ | Java, Python, Node.js, .NET, Rust | Python, Node.js | Java, Python, Node.js, .NET, Rust |
 
 Linux runners are required. For image scans, rebuild from the patched Dockerfile and scan the rebuilt image to verify fixes — see [Rebuild & rescan workflow](#rebuild--rescan-workflow).
 
@@ -30,6 +31,7 @@ Linux runners are required. For image scans, rebuild from the patched Dockerfile
 - [Outputs and artifacts](#outputs-and-artifacts)
 - [`post_scan` modes](#post_scan-modes)
   - [`fix_plan_gos_compat`](#fix_plan_gos_compat)
+  - [`apply_plan`](#apply_plan)
 - [Secrets](#secrets)
 - [Private Python packages](#private-python-packages)
 - [Registry authentication](#registry-authentication)
@@ -330,10 +332,14 @@ jobs:
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written; cleared before each invocation. Use distinct paths to retain local output from multiple scans in one job. |
-| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python and Node.js source scans. See [post_scan modes](#post_scan-modes). |
+| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, `fix_plan_gos_compat`, or `apply_plan`. The `fix_plan_gos_compat` mode is limited to Python and Node.js source scans; `apply_plan` supports the same languages as `fix_plan`. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 | `connect_to_fortknox` | no | `true` | `fix_plan_gos_compat` only — when `false`, the compat check only ever suggests publicly available package versions; Lineaje-rebuilt packages are excluded. See [`fix_plan_gos_compat`](#fix_plan_gos_compat). |
+| `github_token` | no | `${{ github.token }}` | `apply_plan` only — token used to push the remediation branch and open the PR. Needs `contents: write` and `pull-requests: write` — see [`apply_plan`](#apply_plan). |
+| `include_premium` | no | `false` | `apply_plan` only — include premium fixes in the PR. Premium fixes resolve from Lineaje's premium registry, so a PR containing one will not build for a consumer without those credentials; excluded by default. |
+| `pr_reviewers` | no | _(none)_ | `apply_plan` only — space- or comma-separated GitHub logins to request review from. Fails silently if a login is invalid. |
+| `fix_timeout` | no | `900` | `apply_plan` only — seconds to wait for `veecli` to open the pull request before failing. |
 
 ### Image scan inputs
 
@@ -364,6 +370,8 @@ jobs:
 | `sbom_id` | `string` | Full Lineaje SBOM identifier produced by the scan. Empty if the scan did not produce one. |
 | `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities. Missing or unparsable counts default to zero, so check scan warnings before treating zero as a clean result. |
 | `premium_only` | `'true'` \| `'false'` | `true` when a fix plan was produced and every fix is **premium** type — fixes that must be requested from Lineaje before they become available. `false` when at least one **curated** fix exists (already available as-is and can be applied immediately by rebuilding), or when no fix plan was produced. |
+| `pr_created` | `'true'` \| `'false'` | Whether a remediation pull request was opened. Only ever `true` for `post_scan: apply_plan` on a source scan. |
+| `pr_url` | `string` | URL of the remediation pull request (`post_scan: apply_plan`). Empty string when no PR was opened. |
 
 Reference the SBOM ID from a step with an `id`:
 
@@ -384,11 +392,13 @@ Artifact contents by scan type:
 | Scan type | `post_scan` | Artifact name | Files |
 |---|---|---|---|
 | `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
-| `source` (except Go) | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
-| image or supported source | `fix_plan` or `fix_plan_gos_compat` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
+| `source` (except Go) | `fix_plan` or `apply_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| image or supported source | `fix_plan`, `fix_plan_gos_compat`, or `apply_plan` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
 | Python or Node.js source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
 
-`lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
+`lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for `fix_plan`, `fix_plan_gos_compat`, and `apply_plan` alike, including responses with no available fixes.
+
+`apply_plan` runs the same fetch-and-download step `fix_plan` does before it additionally opens a pull request, so the `lineaje-fix-plan` artifact is uploaded as a fallback even when the PR itself succeeds — see [`apply_plan`](#apply_plan) for the PR-specific outputs.
 
 Before artifacts are uploaded, the action prints a package-status table to the job log and GitHub job summary. It includes each package's current and suggested coordinates, package type (`curated`, `premium`, or `rebuild`), and availability status.
 
@@ -414,6 +424,7 @@ Download the raw response later in the same job:
 | `scan_only` | image · source | Scan only — vulnerability summary printed, no fix plan |
 | `fix_plan` | image · source except Go | Scan → generate fix plan → upload the raw response and any patched artifact |
 | `fix_plan_gos_compat` | Python and Node.js source only | Scan → generate fix plan → check package availability in Fortknox → verify installation compatibility → upload candidate manifests |
+| `apply_plan` | source except Go (same as `fix_plan`) | Scan → generate fix plan → `fix_plan`'s artifact upload → create fix tasks → `veecli` commits, pushes and opens a remediation pull request. Image scans fall back to `fix_plan` behavior with a warning — no PR support yet. |
 
 With `fix_plan`, image scans upload a patched `Dockerfile`; supported source scans upload a patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.).
 
@@ -441,6 +452,47 @@ Notes:
 - Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact. The action does not write them back into the checked-out repository.
 - To consume the fixes at build time, point your package manager at the GOS registry — the rebuilt versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
 - **`connect_to_fortknox: false` excludes Lineaje-rebuilt packages entirely.** Only fixes using publicly available package versions are suggested and uploaded; any patch that would have needed a Lineaje-rebuilt (premium) package is dropped.
+
+---
+
+### `apply_plan`
+
+`fix_plan` uploads a patched manifest as a workflow artifact — you still have to download it, copy it into the repo, and open the PR by hand. `apply_plan` closes that loop for source scans: it runs the same fix-plan fetch `fix_plan` does, then hands the plan's components to `veecli`, which commits, pushes a branch and opens the pull request itself.
+
+It supports the same languages as `fix_plan` (everything except Go). Unlike `fix_plan_gos_compat`, there is no separate verification step and no Python/Node.js restriction — the underlying patch-and-PR mechanism has no per-language dependency-install check to gate on.
+
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lineaje-actions/lineaje-actions@v1
+        with:
+          scan_type: source
+          lineaje_cli_token: ${{ secrets.LINEAJE_CLI_TOKEN }}
+          org_name: dummy_org
+          language: node
+          language_version: "18"
+          post_scan: apply_plan
+          pr_reviewers: "octocat, hubot"
+```
+
+Notes:
+
+- **Requires `contents: write` and `pull-requests: write`.** A composite action inherits the calling job's permissions, so the workflow (or job) that uses this action must grant them explicitly — the default `GITHUB_TOKEN` permissions on many orgs are read-only. Without this, `veecli` cannot push the branch or open the PR and the step fails with a clear error.
+- **`github_token` defaults to `${{ github.token }}`.** Pass a personal access token instead if you need the PR to trigger other workflows (the default `GITHUB_TOKEN` does not) or to open the PR across repositories.
+- **Premium fixes are excluded by default.** A PR containing a premium (Lineaje-rebuilt) package version will not build for a consumer without premium-registry credentials, so `include_premium` defaults to `false`. Set it to `true` only if your build is already configured to resolve those packages (see [`fix_plan_gos_compat`](#fix_plan_gos_compat) for the registry mechanics).
+- **`pr_reviewers`** requests review from the given GitHub logins; an invalid login is skipped silently rather than failing the run.
+- **Image scans fall back to `fix_plan` behavior with a warning.** The fix plan and patched-Dockerfile artifact are still produced — no branch, commit, or PR yet for images.
+- **A scan → patch → rescan job that sets `post_scan: apply_plan` on both invocations opens a PR from each one.** Each `apply_plan` run creates its own fix tasks independently; use `apply_plan` on one invocation (typically the first) if you only want a single PR.
+- **`fix_timeout`** bounds how long the action waits for `veecli` to open the PR once fix tasks are queued (default 900s / 15 min) — raise it for large plans that touch many manifests.
+- The PR URL is exposed as the `pr_url` output and also written to the job summary; `pr_created` is `'false'` whenever nothing was applicable to patch (no error — check the job log for why).
 
 ---
 
@@ -607,7 +659,7 @@ Pass the **major version** via `language_version` (e.g. `18`).
 
 Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
-> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` when it is set. `fix_plan_gos_compat` supports only Python and Node.js source scans.
+> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` when it is set. The same fallback applies to `apply_plan`. `fix_plan_gos_compat` supports only Python and Node.js source scans.
 
 | `language_version` | Go version |
 |---|---|

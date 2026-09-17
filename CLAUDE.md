@@ -42,6 +42,8 @@ Plus assets it copies or renders at runtime, used only by `post_scan=fix_plan_go
 - **`lineaje-verify.sh`** — the verify hook, copied verbatim into the veecli dir. It receives `--language` from the rendered fix config and runs only that ecosystem's verifier: Python installs recursive `requirements.txt` files into a shared venv; Node runs `npm install` for recursive `package.json` files with a local cache and the generated npmrc. It exits 1 on installation failure and skips unsupported languages.
 - **`templates/{fix.yaml,npmrc,pip.conf}`** (the fix template renders to `fix.yml`/`fix.yaml`) — rendered by `_render_template()`, which substitutes `__KEY__` placeholders and **raises on any leftover placeholder**, so a renamed key fails loudly instead of producing config veecli silently misreads. Watch out for prose in template comments that looks like a placeholder — it trips the guard.
 
+`templates/fix-pr.yaml` is the equivalent template for `post_scan=apply_plan` — same `_render_template()` guard, but no placeholders today (see `_fix_pr_template`'s docstring). It renders the PR-opening `fix.yml`, distinct from `templates/fix.yaml`'s no-PR verify-hook config; `write_fix_pr_yml` appends the `credentials`/`reviewers` block afterward rather than templating it, since those are per-run secrets/optional data.
+
 ### Scan flow (both modes)
 
 ```
@@ -53,6 +55,7 @@ Plus assets it copies or renders at runtime, used only by `post_scan=fix_plan_go
 5. Poll SCIM API until terminal state ("ready for review" or "failed")
 6. Fetch vulnerability summary (GraphQL/LQL data service)
 7. Request fix plan from GPT service → poll → download patched artifacts
+8. `apply_plan` only: create fix tasks (same GPT endpoint, different query) → `veecli fix --poll-tasks` commits, pushes and opens a pull request
 ```
 
 ### Scan mode selection
@@ -63,7 +66,9 @@ Mode is determined by which CLI flag is provided to `lineaje_scan_gh.py`:
 
 ### Key env vars (set by action.yml, consumed by the script)
 
-`VEECLI_PATH`, `CONFIG_ORIG_PATH`, `SOURCE_FOLDER`, `PROJECT_NAME`, `PROJECT_VERSION`, `MATCHING_REF`, `OUTPUT_DIR`
+`VEECLI_PATH`, `CONFIG_ORIG_PATH`, `SOURCE_FOLDER`, `PROJECT_NAME`, `PROJECT_VERSION`, `MATCHING_REF`, `OUTPUT_DIR`, `LINEAJE_PR_TOKEN`
+
+`LINEAJE_PR_TOKEN` (the `github_token` input) is passed via env, never argv — the script logs its full command line and `/proc/<pid>/cmdline` is world-readable, so a token never belongs in `SCAN_ARGS`.
 
 ### Multi-scan jobs (scanning original + patched image)
 
@@ -115,13 +120,32 @@ A third post-scan mode layered on top of `fix_plan`. After the normal fix plan c
 
 Both steps run inside `_run_fix_plan`'s existing try/except, so failures warn rather than fail the scan — hence `_run_veecli` gained a `fatal` parameter (`RuntimeError` instead of `sys.exit`, since `SystemExit` escapes `except Exception`).
 
-Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string comparisons ([step 1](action.yml) metafiles validation, step 1b Go fallback) that silently did the wrong thing for a new mode value — both are now `!= "scan_only"`. Step 11 exports a `post_scan_effective` step output (undeclared in `outputs:`, internal use only) so the two mutually-exclusive source upload steps can tell `fix_plan` from `fix_plan_gos_compat`; `POST_SCAN_EFFECTIVE` alone isn't enough because the Go fallback rewrites it.
+Gotchas when touching this: `action.yml` had two exact `= "fix_plan"` string comparisons ([step 1](action.yml) metafiles validation, step 1b Go fallback) that silently did the wrong thing for a new mode value — both are now `!= "scan_only"`. Step 11 exports a `post_scan_effective` step output (undeclared in `outputs:`, internal use only) so the two mutually-exclusive source upload steps can tell `fix_plan` from `fix_plan_gos_compat`; `POST_SCAN_EFFECTIVE` alone isn't enough because the Go fallback rewrites it. `POST_SCAN_EFFECTIVE` is now set in **both** validation steps (1 and 1b) — image scans used to rely on step 11's `${POST_SCAN_EFFECTIVE:-inputs.post_scan}` fallback, which apply_plan's own validation (below) needed to not have to repeat.
+
+### `post_scan=apply_plan` (source scans only)
+
+fix_plan uploads a patched manifest as a workflow artifact and stops there — a human still has to copy it into the repo and open a PR. apply_plan closes that loop: it runs the exact same fetch `fix_plan` does (`_run_fix_plan(gos=False, ...)`, now returning the fix-plan response instead of discarding it), then hands off to `apply_plan()` in `main()`, called *outside* `_run_fix_plan`'s try/except — unlike every other post-scan path, an apply_plan failure is fatal (`sys.exit`), since it's an explicit write request and a silent warning would leave the workflow green with the vulnerability unremediated.
+
+It supports the same languages `fix_plan` does — everything except Go, via the same generic `POST_SCAN_EFFECTIVE` downgrade action.yml already does for any non-`scan_only` mode, plus a Python-level `--apply-plan`+`golang` check in `main()` as defense-in-depth for direct script use (mirroring the existing `--gos-fix-plan` check, which is Python/Node-only for a different reason — its verify hook only implements those two ecosystems). apply_plan's PR mechanism has no per-language verify step to restrict on, so it needed no new restriction beyond that.
+
+`apply_plan()`'s three steps:
+
+0. `select_apply_components` filters the fix plan's `plan_details` down to `status: available` (a blank/missing status is treated as available, not dropped — the field isn't present on every response shape this repo has seen), excludes `type: premium` unless `include_premium`, and drops no-op entries (current purl == suggested purl) and exact duplicates. This is *not* a philosophy change from `fix_plan_gos_compat`'s "no client-side filtering, trust the backend" stance (see above) — `include_premium` is a customer-facing toggle with no equivalent in the no-PR flow, and the rest is task hygiene, not second-guessing artifactory availability.
+1. `write_fix_pr_yml` renders `templates/fix-pr.yaml` (via `_fix_pr_template`) and appends a `credentials`/`reviewers` block (`_patch_fix_pr_credentials`), then writes it to all four paths `write_fix_config` does (`fix.yml`/`fix.yaml` × `<veecli_dir>`/`~/veecli/`) for the same "which path veecli actually reads is unconfirmed" reason. The GitHub token comes from `LINEAJE_PR_TOKEN` (env, never argv — see above), is `::add-mask::`'d before it can reach a log line, and every written copy is `chmod 600`. `fix.yaml` (no `-pr`) is the unrelated no-PR verify-hook config, which deliberately *omits* `credentials`/`pull_request`/`reviewers` — see its own section above; `fix-pr.yaml` is the PR-opening config and has no verify hook at all.
+2. `apply_fix_left_plan` — the same function `fix_plan_gos_compat` uses for its own apply call — is called with `query=APPLY_FIX_QUERY_PR` ("Apply fix left plan", no "without pr") instead of the default `APPLY_FIX_QUERY` ("...without pr"). Same two-step guid dance, same `APPLY_FIX_DONE_MESSAGES` allowlist for "finished, nothing queued" (don't reimplement this poll — reusing it is what avoids the "unseen wording looks like a hang" bug documented on that function). What differs between the two `apply_fix_left_plan` callers is entirely in `fix.yml`: real `credentials` here make `veecli fix --poll-tasks` commit, push and open a PR instead of just patching a task dir.
+3. `run_veecli_fix_for_pr` — a distinct function from the existing `run_veecli_fix` (which downloads patched manifests via `--local-repo-dir`/`--output-fix-dir`/`--sbom-id` for the no-PR flow and blocks on `_run_veecli`'s plain `for line in proc.stdout` loop until the process exits on its own). The PR flow passes `--local-repo-dir`/`--sbom-id` too (never `--output-fix-dir`, so veecli commits/pushes instead of just writing files) but wraps it in its own `select()`-based supervisor with an explicit timeout/grace window rather than trusting the process to exit by itself — unconfirmed whether the scoping is enough to bound `--poll-tasks` the way it does for the download-only flow, and a PR URL appearing in the log is the actual completion signal regardless. **Do not rename this to `run_veecli_fix`** — that name is taken by the no-PR download function with an incompatible signature; the two were kept deliberately distinct after a stale feature branch that predated `fix_plan_gos_compat` tried to reuse the name and would have silently clobbered it.
+
+Image scans hit `apply_plan_image_stub()` — warns, keeps the `fix_plan` artifact, exits without opening a PR. Not a hard validation error (unlike `fix_plan_gos_compat`'s image restriction) — image PR support is just not built yet, and failing the whole scan over it would be unfriendly when the customer already gets a usable fix-plan artifact.
+
+A scan → patch → rescan job (see [Multi-scan jobs](#multi-scan-jobs-scanning-original--patched-image) above) that sets `post_scan: apply_plan` on more than one invocation opens more than one PR — each `apply_plan()` call creates its own fix tasks independently, with no cross-invocation dedup. `action.yml` warns about this when `VEECLI_ALREADY_SETUP=true` and `post_scan=apply_plan`, but does not block it.
+
+`pr_created`/`pr_url` are the only two outputs the Python script writes directly (via `_set_output` → `$GITHUB_OUTPUT`), because a URL is a value rather than a log-scraped summary like `ech_count`/`premium_only`. `action.yml` defaults them to `false`/`''` **only** when `POST_SCAN_EFFECTIVE != apply_plan`, so the key is never written twice.
 
 ### Fix plan polling quirk
 
 The GPT service has two behaviors (documented in `poll_fix_plan`): it either blocks until ready (returns `guid=null, overall_status=available`) or returns immediately with a new `guid`. When `guid` expires (returns `null` but status ≠ `available`), the code re-issues a fresh request without a guid to get a new one.
 
-`_run_fix_plan` writes the complete response to `<output_dir>/raw-fix-plan.json` before handling no-fix responses or downloading/applying patched artifacts, for both `fix_plan` and `fix_plan_gos_compat`. `action.yml` uploads it separately as `lineaje-raw-fix-plan`; it does not affect the existing `fix_artifact_uploaded` output.
+`_run_fix_plan` writes the complete response to `<output_dir>/raw-fix-plan.json` before handling no-fix responses or downloading/applying patched artifacts, for `fix_plan`, `fix_plan_gos_compat`, and `apply_plan` alike (apply_plan calls `_run_fix_plan(gos=False, ...)`, the same path plain `fix_plan` takes, and now returns the parsed response so `apply_plan()` can reuse it without a second round-trip). `action.yml` uploads it separately as `lineaje-raw-fix-plan`; it does not affect the existing `fix_artifact_uploaded` output.
 
 ### Python source scan requirements
 

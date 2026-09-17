@@ -1,0 +1,52 @@
+# Rendered by write_fix_pr_yml() in lineaje_scan_gh.py into <veecli dir>/fix.yml
+# (and fix.yaml, and mirrored under ~/veecli/ — write_fix_pr_yml writes every path
+# write_fix_config does, for the same "which one veecli actually reads is not
+# confirmed" reason documented there).
+#
+# Used only for post_scan=apply_plan. Unlike fix.yaml (which patches WITHOUT a PR
+# and deliberately omits pull_request/reviewers/credentials), this config is meant
+# to open a real pull request, so write_fix_pr_yml appends a `credentials:` block
+# (and a `reviewers:` block when requested) after this static content at write
+# time — see _patch_fix_pr_credentials(). No double-underscore placeholder
+# substitution happens in this file today; _fix_pr_template() is the seam if
+# one is ever needed.
+version: 1
+config:
+  - package-ecosystem: "default"
+    commit-author-name: "lineaje-autofix[bot]"
+    commit-author-email: "lineaje-autofix@lineaje.com"
+    commit-branch-prefix: "devtask/LINEAJE-"
+    # Commit will have this contents
+    commit-message: |
+      [lineaje] Update {{.ComponentName}} to {{.FixedVersion}}
+
+      Fixes CVEs - {{.CVEList}}
+    pull_request:
+      # PR will have this title when only one dependency is being modified
+      title-for-single-component: "📦 Bump {{.ComponentName}} from {{.CurrentVersion}} to {{.FixedVersion}}"
+      # PR will have this content body when only one dependency is being modified
+      body-for-single-component: |
+        Lineaje has automatically created this pull request to resolve the following CVEs:
+        | CVE ID  | Severity | Description       |
+        |-------|-----|-----------|
+        {{- range .CVERows }}
+        | {{ .ID }} | {{ .Severity }}  | {{ .Desc }} |
+        {{- end }}
+
+        You can merge this PR once the tests pass and the changes are reviewed.
+
+        Thank you for reviewing the update! :rocket:
+      # PR will have this title when multiple dependencies are being modified
+      title-for-multiple-components: "📦 Bump versions of multiple dependencies to address vulnerabilities"
+      # PR will have this content body when multiple dependencies are being modified
+      body-for-multiple-components: |
+        Lineaje has automatically created this pull request to resolve the following CVEs:
+        | Component | CVE ID  | Severity | Description       |
+        |-------|-------|-----|-----------|
+        {{- range .CVERows }}
+        | {{ .ComponentName }} | {{ .ID }} | {{ .Severity }}  | {{ .Desc }} |
+        {{- end }}
+
+        You can merge this PR once the tests pass and the changes are reviewed.
+
+        Thank you for reviewing the update! :rocket:

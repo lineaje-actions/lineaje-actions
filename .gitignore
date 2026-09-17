@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 .env
+
+# Local scratch: internal plan docs and captured API samples from developing
+# apply_plan. These can carry live credentials (GitHub PATs, Lineaje access
+# JWTs) and must never be committed.
+LIN-*.md
+*-req-res.txt
+fix-sample.yml

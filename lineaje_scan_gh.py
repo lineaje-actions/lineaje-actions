@@ -50,6 +50,7 @@ import json
 import os
 import platform
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -157,6 +158,33 @@ CYCLONEDX_GOMOD_REPO   = "lineaje-labs/cyclonedx-gomod"
 def log(level: str, msg: str):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}", flush=True)
+
+
+def _set_output(name: str, value):
+    """Append a GitHub Actions step output. No-op outside Actions so local runs work.
+
+    Every value we emit is a URL or bool, so flattening CR/LF is enough to keep the
+    key=value form valid — no heredoc delimiter needed.
+    """
+    flat = str(value).replace("\r", " ").replace("\n", " ")
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        log("info", f"output {name}={flat} (GITHUB_OUTPUT unset — not exported)")
+        return
+    with open(path, "a") as fh:
+        fh.write(f"{name}={flat}\n")
+
+
+def _step_summary(markdown: str):
+    """Append a line to the run's job summary. No-op outside GitHub Actions."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a") as fh:
+            fh.write(markdown.rstrip("\n") + "\n")
+    except OSError as e:
+        log("warn", f"Could not write step summary: {e}")
 
 
 # ── Java / Maven / Gradle runtime setup ───────────────────────────────────────
@@ -1312,6 +1340,11 @@ def request_fix_plan(gpt_host: str, token: str, sbom_id: str):
 
 APPLY_FIX_QUERY = "Apply fix left plan without pr"
 
+# post_scan=apply_plan variant: same endpoint and polling contract, but veecli
+# fix.yml carries real repo credentials (write_fix_pr_yml) so the agents commit,
+# push and open a pull request instead of just patching locally.
+APPLY_FIX_QUERY_PR = "Apply fix left plan"
+
 # The apply request is done once the service has queued its agent tasks. It
 # signals that both structurally (task_ids populated) and in prose; task_ids is
 # the primary check since the message wording is the more likely thing to drift.
@@ -1334,15 +1367,21 @@ def _raise_on_explain_error(data: dict, what: str):
 
 
 def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: list,
-                        poll_interval: int = 20, max_attempts: int = 60) -> dict:
+                        poll_interval: int = 20, max_attempts: int = 60,
+                        query: str = APPLY_FIX_QUERY) -> dict:
     """Submit a fix plan's components to the GPT service and wait for it to queue tasks.
 
     The service checks each component's suggested_purl against the GOS artifactory
     and queues the patch tasks that `veecli fix --poll-tasks` later waits on. The
-    plan_details entries are passed through verbatim as metadata.components —
-    what the fix plan returns is already the shape the apply call expects, so no
-    client-side filtering happens here and this action never talks to the
-    artifactory directly.
+    plan_details entries (already filtered by the caller, if at all — see
+    select_apply_components for the apply_plan case) are passed through as
+    metadata.components — this call never talks to the artifactory directly.
+
+    `query` selects which flavour of the apply request this is: APPLY_FIX_QUERY
+    ("...without pr", fix_plan_gos_compat — patches are downloaded, not pushed) or
+    APPLY_FIX_QUERY_PR ("Apply fix left plan", post_scan=apply_plan — the same
+    request, but fix.yml now carries real credentials so veecli commits, pushes
+    and opens a PR). Both share this polling contract.
 
     The call is asynchronous. The first POST (no guid) returns a guid with
     "Request is being processed" and an empty task_ids; re-POSTing the same body
@@ -1351,9 +1390,10 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
     that point would leave `veecli fix --poll-tasks` with nothing to wait on.
     """
     metadata = {"components": plan_details}
-    log("info", f"Applying fix plan for {len(plan_details)} component(s) at {gpt_host}/api/v1/explain")
+    log("info", f"Applying fix plan for {len(plan_details)} component(s) at {gpt_host}/api/v1/explain "
+                f"(query: {query!r})")
 
-    data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY, metadata=metadata)
+    data = _post_explain(gpt_host, token, sbom_id, query, metadata=metadata)
     _raise_on_explain_error(data, "Apply fix plan")
     guid = data.get("guid")
     log("info", f"Apply fix plan submitted — guid: {guid}, message: {data.get('message', '')!r}")
@@ -1381,7 +1421,7 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
         time.sleep(poll_interval)
         log("info", f"Apply fix plan poll {attempt + 1}/{max_attempts} (guid: {guid})...")
         try:
-            data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY,
+            data = _post_explain(gpt_host, token, sbom_id, query,
                                  guid=guid, metadata=metadata)
         except requests.RequestException as e:
             log("warn", f"Apply fix plan poll {attempt + 1}: {e}")
@@ -1746,7 +1786,7 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
                   output_fix_dir: str = "", cli_token: str = "", gos_mode: str = "observe",
                   language: str = "", language_version: str = "",
                   connect_to_fortknox: bool = True,
-                  apply_poll_interval: int = 20, apply_max_attempts: int = 60):
+                  apply_poll_interval: int = 20, apply_max_attempts: int = 60) -> dict | None:
     """Orchestrate gos plan → fix plan request → poll → print → download.
 
     With gos=False the plan's own pre-signed artifacts are downloaded (the
@@ -1755,6 +1795,12 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
     each suggested_purl against the GOS artifactory and queues patch tasks,
     then `veecli fix --poll-tasks` waits on those tasks and writes the patched
     manifests into output_fix_dir.
+
+    Returns the fix plan response so post_scan=apply_plan can reuse it without a
+    second round-trip, or None when the fetch itself failed. This function stays
+    best-effort (fetching a fix plan decorates an already-successful scan) — but
+    apply_plan runs outside this try/except, so its own failures are not
+    downgraded to warnings the way a fetch failure here is.
     """
     try:
         request_gos_plan(gpt_host, token, sbom_id)
@@ -1787,17 +1833,17 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
         if overall_status == "available" and not plan_details:
             log("info", fix_data.get("answer") or "No fixes available.")
             log("info", "No patch artifacts to download")
-            return
+            return fix_data
 
         print_fix_plan(fix_data)
 
         if not gos:
             download_artifacts(fix_data, output_dir=output_dir)
-            return
+            return fix_data
 
         if not plan_details:
             log("warn", "Fix plan returned no components — nothing to apply, skipping veecli fix")
-            return
+            return fix_data
 
         write_fix_config(veecli, cli_token, gos_mode, language, language_version,
                          connect_to_fortknox=connect_to_fortknox)
@@ -1809,11 +1855,378 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
         if not (applied.get("task_ids") or []):
             log("info", "No patch tasks were queued — skipping veecli fix (it would have "
                         "nothing to poll). No patched manifests will be produced.")
-            return
+            return fix_data
         run_veecli_fix(veecli, sbom_id, src_folder, output_fix_dir, cli_token, gos_mode)
         _print_fix_dir(output_fix_dir)
+        return fix_data
     except Exception as e:
         log("warn", f"Failed to fetch fix plan: {e}")
+        return None
+
+
+# ── Apply plan: open a remediation pull request ────────────────────────────────
+#
+# post_scan=apply_plan closes the loop that fix_plan leaves open: fix_plan only
+# uploads patched manifests as a workflow artifact, so a human has to copy them
+# over and open a PR by hand. apply_plan delegates that git/PR work to veecli
+# instead. It supports the same languages as fix_plan (everything except Go,
+# which action.yml already downgrades to scan_only before this script ever sees
+# it) — there is nothing PR-specific about the underlying patch mechanism that
+# would make it Python/Node-only the way fix_plan_gos_compat's verify hook is.
+#
+# Unlike fix_plan_gos_compat (whose apply_fix_left_plan call passes plan_details
+# through verbatim, deliberately, so a client-side availability filter can't
+# drift from the backend's), apply_plan pre-filters with select_apply_components
+# below. That is not a change of philosophy about second-guessing the GOS
+# artifactory — it is a customer-facing toggle (include_premium) plus basic task
+# hygiene (skip components with nothing to change or already queued twice) that
+# has no equivalent in the no-PR flow.
+
+def _component_label(plan: dict) -> str:
+    """`pkg:npm/lodash@4.17.19` → `npm:lodash:4.17.19`, for logging."""
+    purl = plan.get("current_purl", "")
+    match = re.match(r"pkg:([^/]+)/(.+)@([^?]+)", purl)
+    if match:
+        return f"{match.group(1)}:{match.group(2)}:{match.group(3)}"
+    return purl or "<unknown>"
+
+
+def select_apply_components(plan_details: list, include_premium: bool) -> list:
+    """Pick the plan entries to hand to the fix agents for post_scan=apply_plan.
+
+    `status` is the same field action.yml's package-status step prints — per the
+    GPT service, "in-progress" means the patched build does not exist yet and
+    "request premium package" means it has to be ordered, so only "available" is
+    actionable. A missing/blank status is treated as available rather than
+    dropped: the field is not present on every response shape this action has
+    seen (print_fix_plan does not rely on it either), and defaulting to "drop"
+    would silently apply nothing on a plan that omits it.
+
+    Premium fixes are excluded by default: they resolve from Lineaje's premium
+    registry, so a PR containing one will not build for a consumer without those
+    credentials.
+    """
+    kept, dropped = [], []
+    seen: set = set()
+    for plan in plan_details:
+        label     = _component_label(plan)
+        status    = plan.get("status", "")
+        ptype     = plan.get("type", "")
+        current   = plan.get("current_purl", "")
+        suggested = plan.get("suggested_purl", "")
+        if status and status != "available":
+            dropped.append((label, f"status={status!r}"))
+        elif ptype == "premium" and not include_premium:
+            dropped.append((label, "premium fix (set include_premium=true to include)"))
+        elif current and current == suggested:
+            # e.g. an FM source-code fix with no version to bump — nothing for
+            # veecli to commit here.
+            dropped.append((label, f"no version change (fix_version={plan.get('fix_version','?')!r})"))
+        elif (current, suggested) in seen:
+            # A plan that is still settling can list the same component more than
+            # once; passing both through would queue duplicate fix tasks.
+            dropped.append((label, "duplicate entry in plan_details"))
+        else:
+            seen.add((current, suggested))
+            kept.append(plan)
+
+    log("info", f"Component selection: {len(kept)} to apply, {len(dropped)} skipped "
+                f"(include_premium={str(include_premium).lower()})")
+    for plan in kept:
+        log("info", f"  apply  {_component_label(plan)} → {plan.get('fix_version','?')} "
+                    f"[{plan.get('type','?')}]")
+    for label, reason in dropped:
+        log("info", f"  skip   {label} — {reason}")
+    return kept
+
+
+def _redact(text: str, secret: str) -> str:
+    return text.replace(secret, "***") if secret else text
+
+
+FIX_PR_TEMPLATE_NAME = "fix-pr.yaml"
+
+
+def _fix_pr_template() -> str:
+    """Return the base fix.yml text for the PR-opening flow.
+
+    Reads templates/fix-pr.yaml through the same _render_template() guard
+    write_fix_config uses, even though nothing needs substituting today — this
+    is the seam if a future field (e.g. a configurable commit-branch-prefix)
+    needs one.
+    """
+    return _render_template(FIX_PR_TEMPLATE_NAME)
+
+
+def _patch_fix_pr_credentials(text: str, repo_url: str, token: str, reviewers: list) -> str:
+    """Append the credentials (and optional reviewers) block for the repo being fixed.
+
+    Kept separate from _fix_pr_template so the template can gain its own
+    credentials/reviewers block later without this becoming unsafe to run twice —
+    any such block already present is stripped first.
+    """
+    text = re.sub(
+        r"(?:^ {4}#.*\n)*^ {4}(?:credentials|reviewers):\n(?:^ {5,}.*\n|^\s*\n(?= {5,}\S))*",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+    block = ""
+    if reviewers:
+        block += "    # User logins set as reviewers for the PR. Fails silently on error.\n"
+        block += "    reviewers:\n"
+        block += "".join(f'      - "{r}"\n' for r in reviewers)
+    block += "    credentials:\n"
+    block += f'      - repo-url: "{repo_url}"\n'
+    block += f'        token: "{token}"\n'
+    return text.rstrip("\n") + "\n" + block
+
+
+def write_fix_pr_yml(veecli: str, repo_url: str, token: str, reviewers: list) -> Path:
+    """Write fix.yml (and fix.yaml, in both the veecli dir and ~/veecli/) for apply_plan.
+
+    Mirrors write_fix_config's four-path write: which path/spelling veecli
+    actually reads is not confirmed (see write_fix_config's docstring), so the
+    PR config is written everywhere the no-PR config is. Always overwrites — the
+    veecli tarball may ship a fix.yml with placeholder credentials.
+    """
+    if not repo_url:
+        sys.exit("[error] apply_plan: repo URL is required to write fix.yml (--src-url)")
+    if not token:
+        sys.exit(
+            "[error] apply_plan: a GitHub token is required to open a pull request.\n"
+            "  Set the 'github_token' action input (it defaults to ${{ github.token }} —\n"
+            "  if you cleared it, pass a PAT with contents:write and pull-requests:write)."
+        )
+
+    # Mask before the token can reach any log line, including a traceback.
+    print(f"::add-mask::{token}", flush=True)
+
+    text = _patch_fix_pr_credentials(_fix_pr_template(), repo_url, token, reviewers)
+    veecli_dir = Path(veecli).parent
+
+    written = []
+    for directory in (veecli_dir, Path(DEFAULT_CONFIG).parent):
+        for name in ("fix.yml", "fix.yaml"):
+            target = directory / name
+            if any(target.resolve() == w.resolve() for w in written):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                log("info", f"Overwriting existing {target} (shipped with the veecli tarball, "
+                            f"or written by an earlier post_scan mode this job)")
+            target.write_text(text)
+            target.chmod(0o600)
+            written.append(target)
+
+    log("info", f"Wrote fix config to: {', '.join(str(w) for w in written)} "
+                f"(repo: {repo_url}, reviewers: {reviewers or 'none'})")
+    log("info", "--- fix config (token redacted) ---")
+    print(_redact(text, token), flush=True)
+    log("info", "--- end of fix config ---")
+    return written[0]
+
+
+# The PR link is the deliverable, so its appearance in the log is what tells us the
+# fix tasks actually landed. FIX_PR_FAIL_RE catches veecli giving up on a task early.
+FIX_PR_URL_RE  = re.compile(r"https?://[^\s\"'<>]+/pull/\d+")
+FIX_PR_FAIL_RE = re.compile(r"(?i)\b(failed to (?:create|push|commit|clone)|"
+                            r"authentication failed|permission denied|"
+                            r"could not read Username)\b")
+
+
+def run_veecli_fix_for_pr(
+    veecli: str, cli_token: str, gos_mode: str, src_folder: str, sbom_id: str,
+    log_path: str, timeout: int = 900, grace: int = 60,
+) -> list:
+    """Run `veecli fix --poll-tasks` for apply_plan and supervise it until a PR appears.
+
+    Scoped to this repo/sbom the same way run_veecli_fix (the download-only flow)
+    is scoped, to cut down on picking up unrelated tenant-wide tasks. --poll-tasks
+    can still run for a while — or, if that scoping does not bound it here the way
+    it does for the download flow, indefinitely — so this streams output and
+    enforces its own timeout/grace window rather than trusting the process to
+    exit on its own.
+
+    Returns the PR URLs found, in order. Raises SystemExit on any failure.
+    """
+    _ensure_executable(veecli)
+    cmd = [
+        veecli, "fix", "--poll-tasks",
+        "--local-repo-dir", str(Path(src_folder).resolve()),
+        "--sbom-id",        str(sbom_id),
+    ]
+    veecli_cwd = str(Path(veecli).parent)
+
+    log("info", f"Running: {' '.join(cmd)}")
+    log("info", f"Working directory: {veecli_cwd}")
+    log("info", f"Waiting for a pull request, timeout {timeout}s, grace {grace}s, log: {log_path}")
+
+    env = {**os.environ, **_gos_premium_env(cli_token, gos_mode)}
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, cwd=veecli_cwd, env=env,
+    )
+
+    pr_urls: list = []
+    failure = ""
+    deadline = time.monotonic() + timeout
+    stop_by = None  # set to a monotonic deadline once the first PR shows up
+
+    try:
+        with open(log_path, "w") as logfile:
+            while True:
+                # select() rather than a blocking readline so a silent veecli still
+                # hits the deadline. Linux-only action, so select on a pipe is fine.
+                ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                if ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        print(line, end="", flush=True)
+                        logfile.write(line)
+                        logfile.flush()
+
+                        for url in FIX_PR_URL_RE.findall(line):
+                            if url not in pr_urls:
+                                pr_urls.append(url)
+                                log("info", f"Pull request detected: {url}")
+                                stop_by = time.monotonic() + grace
+                        if not failure and FIX_PR_FAIL_RE.search(line):
+                            # These markers are all configuration-level (bad token, no
+                            # push rights) and will not resolve on the next poll, so stop
+                            # now rather than waiting out the whole timeout.
+                            failure = line.strip()
+                            log("error", f"veecli fix reported a failure: {failure}")
+                            break
+                        continue
+                    # Empty read with the fd ready means EOF — veecli exited by itself.
+                    break
+
+                if proc.poll() is not None:
+                    break
+                if stop_by and time.monotonic() >= stop_by:
+                    log("info", f"Grace period elapsed after {len(pr_urls)} pull request(s) "
+                                f"— stopping veecli fix")
+                    break
+                if time.monotonic() >= deadline:
+                    log("error", f"veecli fix did not produce a pull request within {timeout}s")
+                    break
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                log("warn", "veecli fix did not stop on SIGTERM — killing")
+                proc.kill()
+                proc.wait()
+        if proc.stdout:
+            proc.stdout.close()
+
+    log("info", f"veecli fix exit code: {proc.returncode}")
+
+    if not pr_urls:
+        if failure:
+            sys.exit(
+                f"[error] veecli fix could not open a pull request: {failure}\n"
+                f"  Check that the GitHub token has contents:write and pull-requests:write,\n"
+                f"  and that the repo/org allows Actions to create pull requests."
+            )
+        # -15/-9 are our own SIGTERM/SIGKILL from the finally block, not a veecli failure.
+        if proc.returncode not in (0, -15, -9, None):
+            sys.exit(f"[error] veecli fix exited with code {proc.returncode} before creating a pull request")
+        sys.exit(
+            f"[error] veecli fix created no pull request within {timeout}s. "
+            f"Check {log_path} and that the GitHub token can push branches and open pull requests."
+        )
+
+    if failure:
+        # The deliverable exists, so this is not fatal — but say so loudly, because part
+        # of the plan may not have made it into the PR.
+        log("warn", f"veecli fix reported a problem after opening a pull request: {failure}")
+        log("warn", "Review the pull request — some components in the fix plan may not have been applied.")
+
+    log("info", f"veecli fix completed — {len(pr_urls)} pull request(s): {', '.join(pr_urls)}")
+    return pr_urls
+
+
+def apply_plan_image_stub():
+    """Image scans cannot open a remediation PR yet."""
+    log("warn", "=" * 70)
+    log("warn", "apply_plan is not yet implemented for image scans.")
+    log("warn", "The fix plan was still generated and the patched Dockerfile uploaded as a")
+    log("warn", "workflow artifact, exactly as post_scan: fix_plan would do — but no branch,")
+    log("warn", "commits or pull request were created.")
+    log("warn", "Use post_scan: apply_plan with scan_type: source to open a remediation PR.")
+    log("warn", "=" * 70)
+    _set_output("pr_created", "false")
+    _set_output("pr_url", "")
+
+
+def apply_plan(args, fix_data: dict | None, gpt_host: str, token: str, sbom_id: str) -> list:
+    """Create fix tasks from the fix plan, then let veecli commit them and open the PR.
+
+    Any failure here is fatal: apply_plan is an explicit write request, so a
+    silent warning would leave the workflow green with the vulnerability
+    unremediated. This is deliberately called from main() after _run_fix_plan
+    returns, outside that function's own try/except.
+    """
+    log("info", "=" * 70)
+    log("info", "APPLY PLAN — opening a remediation pull request")
+    log("info", "=" * 70)
+
+    plan_details = (fix_data or {}).get("meta_data", {}).get("plan_details", [])
+    if not plan_details:
+        log("info", "No fix plan details — nothing to apply")
+        _set_output("pr_created", "false")
+        _set_output("pr_url", "")
+        return []
+
+    components = select_apply_components(plan_details, args.include_premium)
+    if not components:
+        log("info", "No applicable components after filtering — nothing to apply")
+        _set_output("pr_created", "false")
+        _set_output("pr_url", "")
+        return []
+
+    github_token = os.environ.get("LINEAJE_PR_TOKEN", "")
+    reviewers = [r.strip() for r in (args.pr_reviewers or "").replace(",", " ").split() if r.strip()]
+
+    # 1. Point veecli at this repo with a token that can push and open PRs.
+    write_fix_pr_yml(args.veecli, args.src_url, github_token, reviewers)
+
+    # 2. Ask the GPT service to create the tasks veecli will pick up.
+    try:
+        applied = apply_fix_left_plan(
+            gpt_host, token, sbom_id, components,
+            poll_interval=args.apply_fix_poll_interval,
+            max_attempts=args.apply_fix_max_attempts,
+            query=APPLY_FIX_QUERY_PR,
+        )
+    except RuntimeError as e:
+        sys.exit(f"[error] apply_plan: {e}")
+
+    task_ids = applied.get("task_ids") or []
+    if not task_ids:
+        log("info", "Apply plan finished with no fix tasks queued — nothing for veecli to apply")
+        _set_output("pr_created", "false")
+        _set_output("pr_url", "")
+        return []
+
+    # 3. Let veecli do the commits, branch, push and PR.
+    fix_log = args.fix_log or str(Path(args.output_dir) / "fix.log")
+    pr_urls = run_veecli_fix_for_pr(
+        args.veecli, args.refresh_token, args.gos_mode,
+        args.src_folder, sbom_id, fix_log,
+        timeout=args.fix_timeout, grace=args.fix_grace,
+    )
+
+    _set_output("pr_created", "true")
+    _set_output("pr_url", pr_urls[0])
+    _step_summary("### Lineaje remediation pull request\n")
+    for url in pr_urls:
+        _step_summary(f"- {url}")
+    return pr_urls
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -1901,6 +2314,29 @@ def main():
     parser.add_argument("--apply-fix-max-attempts", type=int, default=60,
                         help="Max polls waiting for patch tasks to be queued (default: 60, ~20 min)")
 
+    # apply plan (source scans only) — opens a remediation pull request. The
+    # GitHub token itself is read from LINEAJE_PR_TOKEN (an env var, not a CLI
+    # flag): the script logs its full command line and /proc/<pid>/cmdline is
+    # world-readable, so a token never belongs in argv.
+    parser.add_argument("--apply-plan", action="store_true", default=False,
+                        help="After the fix plan, create fix tasks via the GPT service and let "
+                            "`veecli fix` commit, push and open a remediation pull request "
+                            "(same languages as fix_plan; source scans only — image scans warn "
+                            "and fall back to the fix_plan artifact)")
+    parser.add_argument("--include-premium", action="store_true", default=False,
+                        help="Include premium fixes in the PR (they need premium-registry "
+                             "credentials to build). Default: excluded")
+    parser.add_argument("--pr-reviewers", default="",
+                        help="Space- or comma-separated GitHub logins to request review from")
+    parser.add_argument("--fix-timeout", type=int, default=900,
+                        help="Seconds to wait for veecli fix to open a pull request (default: 900)")
+    parser.add_argument("--fix-grace", type=int, default=60,
+                        help="Seconds to keep reading veecli fix's output after the first pull "
+                             "request appears, to catch additional PRs from a multi-PR plan "
+                             "(default: 60)")
+    parser.add_argument("--fix-log", default="",
+                        help="Where to write the veecli fix log (default: <output-dir>/fix.log)")
+
     args = parser.parse_args()
 
     # ── Determine scan mode ────────────────────────────────────────────────────
@@ -1925,6 +2361,17 @@ def main():
         sys.exit("[error] --gos-fix-plan is only supported for Python and Node.js source scans")
     if args.gos_fix_plan and args.skip_fix_plan:
         sys.exit("[error] --gos-fix-plan cannot be combined with --skip-fix-plan")
+
+    # apply_plan supports the same languages as fix_plan (everything except Go —
+    # action.yml already downgrades Go to scan_only, this is defense-in-depth for
+    # direct script use). Image scans degrade gracefully to apply_plan_image_stub
+    # rather than erroring, so no scan_mode check here.
+    if args.apply_plan and args.gos_fix_plan:
+        sys.exit("[error] --apply-plan cannot be combined with --gos-fix-plan")
+    if args.apply_plan and args.skip_fix_plan:
+        sys.exit("[error] --apply-plan cannot be combined with --skip-fix-plan")
+    if args.apply_plan and scan_mode == "source" and args.language == "golang":
+        sys.exit("[error] --apply-plan is not yet supported for Go source scans")
 
     output_fix_dir = args.output_fix_dir or str(Path(args.output_dir) / "fix")
 
@@ -2108,8 +2555,9 @@ def main():
         log("info", "Skipping fix plan (--gpt-host not provided)")
     else:
         log("info", f"Requesting fix plan (scan mode: {scan_mode}"
-                    f"{', GOS apply + veecli fix' if args.gos_fix_plan else ''})...")
-        _run_fix_plan(
+                    f"{', GOS apply + veecli fix' if args.gos_fix_plan else ''}"
+                    f"{', apply_plan (open PR)' if args.apply_plan else ''})...")
+        fix_data = _run_fix_plan(
             gpt_host, token, sbom_id, args.output_dir,
             poll_interval=args.fix_plan_poll_interval,
             max_attempts=args.fix_plan_max_attempts,
@@ -2125,6 +2573,14 @@ def main():
             apply_poll_interval=args.apply_fix_poll_interval,
             apply_max_attempts=args.apply_fix_max_attempts,
         )
+
+        if args.apply_plan:
+            if scan_mode == "image":
+                apply_plan_image_stub()
+            elif fix_data is None:
+                sys.exit("[error] --apply-plan requires a fix plan, but fetching it failed")
+            else:
+                apply_plan(args, fix_data, gpt_host, token, sbom_id)
 
 
 if __name__ == "__main__":
