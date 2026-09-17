@@ -204,9 +204,10 @@ runs:
     - name: Download and extract veecli
       shell: bash
       run: |
-        # Reuse veecli if already set up by an earlier action call in this job.
-        # CONFIG_ORIG_PATH is already in $GITHUB_ENV from the first call — don't overwrite it.
-        if [ -x /opt/veecli/veecli ]; then
+        # Reuse veecli only after this action completed setup earlier in the same
+        # job. Self-hosted runners may retain /opt/veecli across jobs, while the
+        # action checkout, virtualenv, and $GITHUB_ENV values do not persist.
+        if [ "${LINEAJE_ACTION_SETUP_COMPLETE:-}" = "true" ] && [ -x /opt/veecli/veecli ]; then
           echo "VEECLI_ALREADY_SETUP=true" >> "$GITHUB_ENV"
           echo "VEECLI_PATH=$(realpath /opt/veecli/veecli)" >> "$GITHUB_ENV"
           exit 0
@@ -352,6 +353,7 @@ runs:
         python3 -m venv "${{ github.action_path }}/.venv"
         source "${{ github.action_path }}/.venv/bin/activate"
         pip install --quiet requests
+        echo "LINEAJE_ACTION_SETUP_COMPLETE=true" >> "$GITHUB_ENV"
 
     # ── 10. Resolve dynamic env vars ─────────────────────────────────────────
     - name: Set scan env vars
@@ -412,6 +414,7 @@ runs:
         [ -n "${{ inputs.notification_url }}" ] && SCAN_ARGS+=(--notification-host "${{ inputs.notification_url }}")
         [ -n "${{ inputs.data_service_url }}" ] && SCAN_ARGS+=(--data-host         "${{ inputs.data_service_url }}")
         [ -n "${{ inputs.gpt_service_url }}" ]  && SCAN_ARGS+=(--gpt-host          "${{ inputs.gpt_service_url }}")
+        [ "$VEECLI_ALREADY_SETUP" = "true" ] && SCAN_ARGS+=(--reuse-config)
 
         if [ "${{ inputs.scan_type }}" = "image" ]; then
           SCAN_ARGS+=(
