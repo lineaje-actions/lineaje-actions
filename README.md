@@ -329,7 +329,7 @@ jobs:
 | `project_name` | no | repository name | Lineaje project name |
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
-| `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written |
+| `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written; cleared before each invocation. Use distinct paths to retain local output from multiple scans in one job. |
 | `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python and Node.js source scans. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |

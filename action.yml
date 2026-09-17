@@ -43,7 +43,7 @@ inputs:
     description: "Lineaje token"
     required: true
   output_dir:
-    description: "Output directory for veecli"
+    description: "Output directory for veecli; cleared before each scan invocation"
     required: false
     default: "/tmp/lineaje-scan-output"
 
@@ -344,6 +344,19 @@ runs:
           exit 1
         fi
         echo "SOURCE_FOLDER=$(realpath "$SOURCE_DIR")" >> "$GITHUB_ENV"
+
+    # ── 8b. Clean output from earlier scans ──────────────────────────────────
+    - name: Clean stale Lineaje output
+      shell: bash
+      env:
+        LINEAJE_OUTPUT_DIR: ${{ inputs.output_dir }}
+      run: |
+        if [ -z "$LINEAJE_OUTPUT_DIR" ] || [ "$LINEAJE_OUTPUT_DIR" = "/" ] \
+          || [ "$LINEAJE_OUTPUT_DIR" = "." ] || [ "$LINEAJE_OUTPUT_DIR" = "$GITHUB_WORKSPACE" ]; then
+          echo "[error] Refusing to clean unsafe output_dir: $LINEAJE_OUTPUT_DIR"
+          exit 1
+        fi
+        rm -rf -- "$LINEAJE_OUTPUT_DIR"
 
     # ── 9. Install Python dependencies ───────────────────────────────────────
     - name: Install Python dependencies
