@@ -1177,6 +1177,7 @@ def run_veecli_fix(
     cmd = [
         veecli, "fix",
         "--poll-tasks",
+        "--poll",            "30",
         "--local-repo-dir",  str(Path(local_repo_dir).resolve()),
         "--output-fix-dir",  str(Path(output_fix_dir).resolve()),
         "--sbom-id",         str(sbom_id),
@@ -2053,6 +2054,7 @@ def run_veecli_fix_for_pr(
     _ensure_executable(veecli)
     cmd = [
         veecli, "fix", "--poll-tasks",
+        "--poll",           "30",
         "--local-repo-dir", str(Path(src_folder).resolve()),
         "--sbom-id",        str(sbom_id),
     ]
