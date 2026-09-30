@@ -1157,6 +1157,15 @@ def run_veecli_source(
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
 
 
+def run_veecli_deregister(veecli: str, token: str, gos_mode: str) -> None:
+    """Deregister this veecli invocation once the scan (and any fix/apply steps)
+    have finished. Best-effort: a failure here doesn't affect the scan result.
+    """
+    _ensure_executable(veecli)
+    cmd = [veecli, "deregister", "-f"]
+    _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode, fatal=False)
+
+
 def run_veecli_fix(
     veecli: str,
     sbom_id: str,
@@ -2583,6 +2592,12 @@ def main():
                 sys.exit("[error] --apply-plan requires a fix plan, but fetching it failed")
             else:
                 apply_plan(args, fix_data, gpt_host, token, sbom_id)
+
+    # ── 7. Deregister ───────────────────────────────────────────────────────────
+    try:
+        run_veecli_deregister(args.veecli, cli_token, args.gos_mode)
+    except Exception as e:
+        log("warn", f"veecli deregister failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
