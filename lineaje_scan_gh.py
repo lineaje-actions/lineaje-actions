@@ -2416,26 +2416,6 @@ def main():
         elif args.language == "golang":
             setup_go_runtime(args.language_version)
             patch_runtimes_config_go(args.veecli, args.language_version)
-            # cyclonedx-gomod v1.10+ calls `go list -mod readonly`, which
-            # requires go.sum to exist. Run `go mod tidy` to generate it when
-            # the project is NOT using vendor mode (vendor/ dir present means
-            # -mod=vendor is implied and tidy would fail or be unnecessary).
-            go_bin = THIRD_PARTY / f"go-{args.language_version}" / "bin" / "go"
-            if go_bin.exists() and args.src_folder:
-                vendor_dir = Path(args.src_folder) / "vendor"
-                if vendor_dir.is_dir():
-                    log("info", "vendor/ directory detected — skipping go mod tidy (vendor mode)")
-                else:
-                    log("info", f"Running go mod tidy in {args.src_folder}")
-                    tidy = subprocess.run(
-                        [str(go_bin), "mod", "tidy"],
-                        cwd=args.src_folder,
-                        capture_output=True, text=True,
-                    )
-                    if tidy.returncode == 0:
-                        log("info", "go mod tidy succeeded — go.sum generated")
-                    else:
-                        log("warn", f"go mod tidy failed (non-fatal): {tidy.stderr.strip()}")
         elif args.language == "dotnet":
             log("info", f".NET {args.language_version} — runtime installed by action setup step")
         elif args.language == "rust":
