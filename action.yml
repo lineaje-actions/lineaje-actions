@@ -227,14 +227,10 @@ runs:
           exit 1
         fi
 
-        # apply_plan supports every language fix_plan does (Go excepted below) —
-        # the pull-request mechanism has no language-specific verify step the
-        # way fix_plan_gos_compat does, so there is nothing to further restrict.
+        # apply_plan supports every language fix_plan does except Go — that is
+        # still enforced, just by lineaje_scan_gh.py's own --apply-plan+golang
+        # check rather than a downgrade here.
         EFFECTIVE="${{ inputs.post_scan }}"
-        if [ "${{ inputs.language }}" = "golang" ] && [ "$EFFECTIVE" != "scan_only" ]; then
-          echo "[warn] ${{ inputs.post_scan }} is not yet supported for Go — falling back to scan_only"
-          EFFECTIVE="scan_only"
-        fi
         echo "POST_SCAN_EFFECTIVE=$EFFECTIVE" >> "$GITHUB_ENV"
 
         if [ "$EFFECTIVE" = "apply_plan" ] && [ -z "${{ inputs.github_token }}" ]; then
@@ -504,10 +500,9 @@ runs:
           )
         fi
 
-        # POST_SCAN_EFFECTIVE is set by both validation steps (1 and 1b) — Go
-        # source scans downgrade it to scan_only, otherwise it mirrors
-        # inputs.post_scan verbatim. The early check above already guarantees
-        # it is non-empty here.
+        # POST_SCAN_EFFECTIVE is set by both validation steps (1 and 1b) and
+        # mirrors inputs.post_scan verbatim. The early check above already
+        # guarantees it is non-empty here.
         EFFECTIVE="$POST_SCAN_EFFECTIVE"
 
         if [ "$EFFECTIVE" = "scan_only" ]; then
