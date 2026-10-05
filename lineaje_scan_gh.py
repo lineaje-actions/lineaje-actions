@@ -1703,7 +1703,7 @@ def _maven_bin_dir() -> str:
 
 def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe",
                      language: str = "", language_version: str = "",
-                     connect_to_fortknox: bool = True,
+                     connect_to_fortknox: bool = True, repo_root: str = "",
                      timeout_seconds: int = VERIFY_TIMEOUT_SECONDS) -> Path:
     """Write fix.yaml and the verify hook's script and credentials into the veecli dir.
 
@@ -1721,6 +1721,13 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
     manifests against Maven Central instead of Fortknox, so any patch that
     needed a Lineaje-rebuilt version fails to resolve and is rejected rather
     than uploaded. No effect on Python, whose verification never used Fortknox.
+
+    repo_root (java only): the original full checkout, passed to the hook as
+    --repo-root. veecli's --task-dir contains only the specific file(s) a patch
+    task touches (e.g. just core/pom.xml out of a core+app reactor), not the
+    whole project — a Maven multi-module build needs the parent POM and sibling
+    modules too, so the hook reconstructs the full tree from repo_root and
+    overlays the patched file(s) from --task-dir on top of it.
     """
     veecli_dir = Path(veecli_path).parent
 
@@ -1770,6 +1777,7 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
         MVN_BIN_DIR=_maven_bin_dir() if language == "java" else "",
+        REPO_ROOT=str(Path(repo_root).resolve()) if (language == "java" and repo_root) else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
@@ -1886,7 +1894,7 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
             return fix_data
 
         write_fix_config(veecli, cli_token, gos_mode, language, language_version,
-                         connect_to_fortknox=connect_to_fortknox)
+                         connect_to_fortknox=connect_to_fortknox, repo_root=src_folder)
         applied = apply_fix_left_plan(
             gpt_host, token, sbom_id, plan_details,
             poll_interval=apply_poll_interval,

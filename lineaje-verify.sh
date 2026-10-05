@@ -26,7 +26,19 @@
 #
 # Usage:
 #   ./lineaje-verify.sh --task-dir DIR --language python|node|java \
-#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--connect-to-fortknox true|false]
+#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--repo-root DIR] \
+#       [--connect-to-fortknox true|false]
+#
+# --repo-root (java only) is the original full repository checkout, as opposed
+# to --task-dir, which veecli populates with only the specific file(s) a patch
+# task touches (e.g. just core/pom.xml out of a core+app reactor) — not a full
+# copy of the project. A Maven multi-module build needs the whole tree (parent
+# POM, sibling modules), so when --repo-root is given, the java case
+# reconstructs it: copy --repo-root, then overlay --task-dir's patched file(s)
+# on top at their same relative paths, and build that. Without --repo-root,
+# the java case falls back to treating --task-dir as the whole project, same
+# as the python/node cases do — correct only when the pom.xml has no parent
+# and no sibling modules.
 #
 # --connect-to-fortknox false (default true) makes the node case check
 # package.json against the public npm registry and the java case check pom.xml
@@ -107,6 +119,7 @@ REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
 MVN_BIN_DIR=""
+ORIG_REPO_ROOT=""
 CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -114,6 +127,7 @@ while [[ $# -gt 0 ]]; do
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
         --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
+        --repo-root) ORIG_REPO_ROOT="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
     esac
@@ -277,11 +291,22 @@ case "$LANGUAGE" in
         fi
         ;;
     java)
+        # ---- TEMP verbose debugging (Java support still under test — revert
+        # before merging): logs the settings.xml actually in use, the
+        # GOS_PREMIUM_MAVEN_REGISTRY env var veecli should have exported, and
+        # the reconstructed project tree, and drops mvn's -q flag so Maven's
+        # own INFO-level repository/download lines show up instead of only
+        # appearing (redacted) after a failure. ----
+        log_info "[debug] GOS_PREMIUM_MAVEN_REGISTRY=${GOS_PREMIUM_MAVEN_REGISTRY:-<unset>}"
+
         MVN_SETTINGS_ARGS=()
         if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
             if [[ -f "$MAVEN_SETTINGS" ]]; then
                 MVN_SETTINGS_ARGS=(-s "$MAVEN_SETTINGS")
                 log_info "Using maven settings: ${MAVEN_SETTINGS}"
+                log_info "[debug] --- ${MAVEN_SETTINGS} ---"
+                print_redacted_log "$MAVEN_SETTINGS"
+                log_info "[debug] --- end of ${MAVEN_SETTINGS} ---"
             else
                 log_error "lineaje-verify-settings.xml not found; GOS-rebuilt artifacts will not resolve"
             fi
@@ -292,11 +317,31 @@ case "$LANGUAGE" in
         M2_REPO="${WORKDIR}/m2-repo"
         mkdir -p "$M2_REPO"
 
-        log_info "Searching recursively for pom.xml under ${REPO_ROOT}"
+        # --task-dir only contains the specific file(s) this task patches, not the
+        # whole project — a multi-module build needs the parent POM and sibling
+        # modules too. When --repo-root (the real checkout) is available,
+        # reconstruct the full tree there and overlay the patched file(s) on top
+        # at their real relative paths; otherwise fall back to building --task-dir
+        # as-is (correct only for a standalone, parent-less pom.xml).
+        if [[ -n "$ORIG_REPO_ROOT" && -d "$ORIG_REPO_ROOT" ]]; then
+            BUILD_ROOT="${WORKDIR}/project"
+            mkdir -p "$BUILD_ROOT"
+            log_info "Reconstructing full project at ${BUILD_ROOT} (base: ${ORIG_REPO_ROOT}, patched overlay: ${REPO_ROOT})"
+            cp -a "${ORIG_REPO_ROOT}/." "${BUILD_ROOT}/"
+            rm -rf "${BUILD_ROOT}/.git"
+            cp -a "${REPO_ROOT}/." "${BUILD_ROOT}/"
+            log_info "[debug] --- reconstructed project tree (${BUILD_ROOT}) ---"
+            find "${BUILD_ROOT}" -type f | sort
+            log_info "[debug] --- end of reconstructed project tree ---"
+        else
+            BUILD_ROOT="${REPO_ROOT}"
+        fi
+
+        log_info "Searching recursively for pom.xml under ${BUILD_ROOT}"
         ALL_POMS=()
         while IFS= read -r file; do
             ALL_POMS+=("$file")
-        done < <(find "${REPO_ROOT}" -type f -name "pom.xml" -not -path "*/target/*" 2>/dev/null)
+        done < <(find "${BUILD_ROOT}" -type f -name "pom.xml" -not -path "*/target/*" 2>/dev/null)
 
         # Only the root pom of each project is built — a pom nested under another
         # pom's directory is treated as a module of that reactor, not a separate
@@ -366,14 +411,20 @@ case "$LANGUAGE" in
                 mvn_log="${WORKDIR}/mvn_compile.log"
                 : > "$mvn_log"
                 log_info "Running: mvn test-compile (cwd=${pom_dir})"
-                if (cd "${pom_dir}" && "${MVN_CMD}" -B -q \
+                # [debug] -q dropped and output streamed live (redacted) rather than
+                # only dumped on failure, so Maven's own repository/download lines
+                # (confirms whether the GOS registry actually resolves) show up
+                # as they happen — revert to -q + print-only-on-failure once Java
+                # support is done being tested.
+                if (cd "${pom_dir}" && "${MVN_CMD}" -B \
                         "${MVN_SETTINGS_ARGS[@]+"${MVN_SETTINGS_ARGS[@]}"}" \
                         "${REVISION_ARGS[@]+"${REVISION_ARGS[@]}"}" \
-                        -Dmaven.repo.local="${M2_REPO}" test-compile >>"$mvn_log" 2>&1); then
+                        -Dmaven.repo.local="${M2_REPO}" test-compile 2>&1 \
+                        | tee "$mvn_log" \
+                        | sed -E 's#(https?://)[^[:space:]]*@#\1***:***@#g'); then
                     log_info "mvn test-compile succeeded for ${pom}"
                 else
-                    log_error "mvn test-compile FAILED for ${pom}. Redacted output follows:"
-                    print_redacted_log "$mvn_log"
+                    log_error "mvn test-compile FAILED for ${pom} (see output above)"
                     ANY_INSTALL_FAILED=1
                 fi
             done
