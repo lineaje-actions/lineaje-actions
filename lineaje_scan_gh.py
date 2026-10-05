@@ -1031,7 +1031,11 @@ def _gos_premium_env(token: str, gos_mode: str) -> dict:
     return {
         "GOS_PREMIUM_REGISTRY_TOKEN": token,
         "ARTIFACTORY_NPM_TOKEN": token,
+        "ARTIFACTORY_MAVEN_TOKEN": token,
         "GOS_PREMIUM_NPM_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/api/npm/gos-all-proxy-npm",
+        # Unlike npm's /api/npm/ wrapper (npm-specific Artifactory behaviour), a
+        # Maven-layout repo is served directly at /artifactory/<repo-key>/.
+        "GOS_PREMIUM_MAVEN_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/gos-all-proxy-maven",
         "GOS_PREMIUM_REGISTRY_USERNAME": "lineaje_customer@lineaje.com",
     }
 
@@ -1606,9 +1610,10 @@ def print_fix_plan(data: dict):
 
 # ── veecli fix config ─────────────────────────────────────────────────────────
 
-VERIFY_SCRIPT_NAME   = "lineaje-verify.sh"
-VERIFY_NPMRC_NAME    = "lineaje-verify.npmrc"
-VERIFY_PIP_CONF_NAME = "lineaje-verify-pip.conf"
+VERIFY_SCRIPT_NAME      = "lineaje-verify.sh"
+VERIFY_NPMRC_NAME       = "lineaje-verify.npmrc"
+VERIFY_PIP_CONF_NAME    = "lineaje-verify-pip.conf"
+VERIFY_SETTINGS_XML_NAME = "lineaje-verify-settings.xml"
 
 ACTION_DIR    = Path(__file__).resolve().parent
 TEMPLATES_DIR = ACTION_DIR / "templates"
@@ -1653,6 +1658,21 @@ def _npmrc_content(token: str, gos_mode: str) -> str:
     )
 
 
+def _maven_settings_content(token: str, gos_mode: str) -> str:
+    """Maven user settings.xml pointing at the GOS premium Maven registry.
+
+    The password is a Maven-interpolated ${env.*} reference, not the raw token —
+    resolved by Maven itself from the verification hook's environment, same
+    principle as npmrc's ${ARTIFACTORY_NPM_TOKEN} expansion.
+    """
+    gos = _gos_premium_env(token, gos_mode)
+    return _render_template(
+        "settings.xml",
+        REGISTRY_URL=gos["GOS_PREMIUM_MAVEN_REGISTRY"],
+        USERNAME=gos["GOS_PREMIUM_REGISTRY_USERNAME"],
+    )
+
+
 def _normalize_pip_index_urls(value: str) -> str:
     """Percent-encode credentials while preserving each index URL's host and path."""
     normalized = []
@@ -1675,6 +1695,12 @@ def _node_bin_dir(version: str) -> str:
     return str(THIRD_PARTY / f"node-{matches[0]}" / "bin") if matches else ""
 
 
+def _maven_bin_dir() -> str:
+    """Maven is a single pinned version (MAVEN_VERSION), unlike per-version Node/Python —
+    no language_version lookup needed."""
+    return str(THIRD_PARTY / MAVEN_DIR / "bin")
+
+
 def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe",
                      language: str = "", language_version: str = "",
                      connect_to_fortknox: bool = True,
@@ -1691,10 +1717,10 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
     The hook is blocking: a patched manifest whose pins cannot be installed is
     rejected rather than copied, by exiting non-zero. connect_to_fortknox=False
     relies on that: the verify hook is told (via fix.yaml's --connect-to-fortknox
-    arg) to check Node.js manifests against the public npm registry instead of
-    Fortknox, so any patch that needed a Lineaje-rebuilt version fails to
-    install and is rejected rather than uploaded. No effect on Python, whose
-    verification never used Fortknox.
+    arg) to check Node.js manifests against the public npm registry and Java
+    manifests against Maven Central instead of Fortknox, so any patch that
+    needed a Lineaje-rebuilt version fails to resolve and is rejected rather
+    than uploaded. No effect on Python, whose verification never used Fortknox.
     """
     veecli_dir = Path(veecli_path).parent
 
@@ -1720,6 +1746,18 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         pip_conf.chmod(0o600)
         log("info", f"Wrote {pip_conf} (extra-index-url from pip_extra_index_url)")
 
+    settings_xml = veecli_dir / VERIFY_SETTINGS_XML_NAME
+    if connect_to_fortknox and token:
+        settings_xml.write_text(_maven_settings_content(token, gos_mode))
+        settings_xml.chmod(0o600)
+        log("info", f"Wrote {settings_xml} (GOS premium maven registry, {gos_mode} mode)")
+    elif not connect_to_fortknox:
+        log("info", "connect_to_fortknox=false — skipping maven settings.xml; verify hook will "
+                    "resolve Java dependencies from Maven Central only")
+    else:
+        log("warn", "No CLI token available — skipping maven settings.xml; "
+                    "mvn in the verify hook will not resolve lineaje-rebuilt versions")
+
     if not VERIFY_SCRIPT_SRC.exists():
         raise RuntimeError(f"verify script missing from the action: {VERIFY_SCRIPT_SRC}")
     verify_script = veecli_dir / VERIFY_SCRIPT_NAME
@@ -1731,6 +1769,7 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         VERIFY_SCRIPT=verify_script,
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
+        MVN_BIN_DIR=_maven_bin_dir() if language == "java" else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
@@ -2302,7 +2341,7 @@ def main():
     parser.add_argument("--skip-fix-plan", action="store_true", default=False, help="Skip fix plan after scan")
     parser.add_argument("--gos-fix-plan", action="store_true", default=False,
                         help="After the fix plan, apply it via the GPT service and run `veecli fix` to "
-                            "download patched manifests (Python and Node.js source scans only)")
+                            "download patched manifests (Python, Node.js and Java source scans only)")
     parser.add_argument("--output-fix-dir", default="",
                         help="Where `veecli fix` writes patched manifests (default: <output-dir>/fix)")
     parser.add_argument("--no-connect-to-fortknox", action="store_true", default=False,
@@ -2359,8 +2398,8 @@ def main():
     # for it to act on in image mode.
     if args.gos_fix_plan and scan_mode != "source":
         sys.exit("[error] --gos-fix-plan is only supported for source scans")
-    if args.gos_fix_plan and args.language not in {"python", "node"}:
-        sys.exit("[error] --gos-fix-plan is only supported for Python and Node.js source scans")
+    if args.gos_fix_plan and args.language not in {"python", "node", "java"}:
+        sys.exit("[error] --gos-fix-plan is only supported for Python, Node.js and Java source scans")
     if args.gos_fix_plan and args.skip_fix_plan:
         sys.exit("[error] --gos-fix-plan cannot be combined with --skip-fix-plan")
 

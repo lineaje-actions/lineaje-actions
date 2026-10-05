@@ -85,7 +85,7 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan | fix_plan_gos_compat (Python and Node.js source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js and Java source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
     required: false
     default: "scan_only"
   connect_to_fortknox:
@@ -222,8 +222,9 @@ runs:
         fi
         if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ] \
           && [ "${{ inputs.language }}" != "python" ] \
-          && [ "${{ inputs.language }}" != "node" ]; then
-          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python and Node.js source scans"
+          && [ "${{ inputs.language }}" != "node" ] \
+          && [ "${{ inputs.language }}" != "java" ]; then
+          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python, Node.js and Java source scans"
           exit 1
         fi
 
@@ -714,4 +715,5 @@ runs:
         path: |
           ${{ inputs.output_dir }}/fix
           !${{ inputs.output_dir }}/fix/**/node_modules/**
+          !${{ inputs.output_dir }}/fix/**/target/**
         if-no-files-found: ignore

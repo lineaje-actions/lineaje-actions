@@ -18,19 +18,21 @@
 # write_fix_config() in lineaje_scan_gh.py copies it into the veecli directory
 # and points fix.yaml's verify-local-files-actions at that copy.
 #
-# Installs dependencies for the selected language under the task directory:
-# requirements.txt through a Python venv, or package.json through npm. A
-# non-zero exit makes veecli skip the copy and fail the agent.
+# Verifies the patched manifest for the selected language under the task
+# directory: requirements.txt through a Python venv, package.json through npm,
+# or pom.xml through Maven resolve + test-compile (no test execution — see the
+# java case below). A non-zero exit makes veecli skip the copy and fail the
+# agent.
 #
 # Usage:
-#   ./lineaje-verify.sh --task-dir DIR --language python|node [--node-bin-dir DIR] \
-#       [--connect-to-fortknox true|false]
+#   ./lineaje-verify.sh --task-dir DIR --language python|node|java \
+#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--connect-to-fortknox true|false]
 #
 # --connect-to-fortknox false (default true) makes the node case check
-# package.json against the public npm registry instead of the Fortknox GOS
-# premium registry, so Lineaje-rebuilt (-lineaje-N) packages fail to resolve
-# and their patches are rejected. No effect on the python case, which never
-# used Fortknox.
+# package.json against the public npm registry and the java case check pom.xml
+# against Maven Central instead of the Fortknox GOS premium registry, so
+# Lineaje-rebuilt (-lineaje-N) packages fail to resolve and their patches are
+# rejected. No effect on the python case, which never used Fortknox.
 #
 # Falls back to $LOCAL_TASK_DIR then $PWD when --task-dir is absent, so it works
 # both under veecli's Verify Local Files Agent and when run by hand. Unrecognised
@@ -99,16 +101,19 @@ NODE
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIP_CONFIG="${SCRIPT_DIR}/lineaje-verify-pip.conf"
 NPM_CONFIG="${SCRIPT_DIR}/lineaje-verify.npmrc"
+MAVEN_SETTINGS="${SCRIPT_DIR}/lineaje-verify-settings.xml"
 
 REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
+MVN_BIN_DIR=""
 CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --task-dir) REPO_ROOT="${2:-}"; shift 2 ;;
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
+        --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
     esac
@@ -125,18 +130,26 @@ FOUND_ANY_MANIFEST=0
 ANY_INSTALL_FAILED=0
 NODE_PACKAGE_DIRS=()
 GENERATED_LOCKFILES=()
+JAVA_PROJECT_DIRS=()
 
-cleanup_node_install_artifacts() {
-    local package_dir lockfile
-    for package_dir in "${NODE_PACKAGE_DIRS[@]}"; do
+cleanup_verify_artifacts() {
+    # The "${ARR[@]+"${ARR[@]}"}" form (rather than plain "${ARR[@]}") avoids an
+    # "unbound variable" error under `set -u` when the array is empty on bash
+    # versions older than 4.4 — this trap always runs, including when nothing
+    # of that kind was found.
+    local package_dir lockfile project_dir
+    for package_dir in "${NODE_PACKAGE_DIRS[@]+"${NODE_PACKAGE_DIRS[@]}"}"; do
         rm -rf "${package_dir}/node_modules"
     done
-    for lockfile in "${GENERATED_LOCKFILES[@]}"; do
+    for lockfile in "${GENERATED_LOCKFILES[@]+"${GENERATED_LOCKFILES[@]}"}"; do
         rm -f "$lockfile"
+    done
+    for project_dir in "${JAVA_PROJECT_DIRS[@]+"${JAVA_PROJECT_DIRS[@]}"}"; do
+        find "$project_dir" -type d -name target -prune -exec rm -rf {} +
     done
 }
 
-trap cleanup_node_install_artifacts EXIT
+trap cleanup_verify_artifacts EXIT
 
 case "$LANGUAGE" in
     python)
@@ -258,6 +271,109 @@ case "$LANGUAGE" in
                 else
                     log_error "npm install FAILED in ${pkg_dir}. Redacted npm output follows:"
                     print_redacted_log "$npm_log"
+                    ANY_INSTALL_FAILED=1
+                fi
+            done
+        fi
+        ;;
+    java)
+        MVN_SETTINGS_ARGS=()
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            if [[ -f "$MAVEN_SETTINGS" ]]; then
+                MVN_SETTINGS_ARGS=(-s "$MAVEN_SETTINGS")
+                log_info "Using maven settings: ${MAVEN_SETTINGS}"
+            else
+                log_error "lineaje-verify-settings.xml not found; GOS-rebuilt artifacts will not resolve"
+            fi
+        else
+            log_info "connect_to_fortknox=false — resolving Java dependencies from Maven Central only; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
+        fi
+
+        M2_REPO="${WORKDIR}/m2-repo"
+        mkdir -p "$M2_REPO"
+
+        log_info "Searching recursively for pom.xml under ${REPO_ROOT}"
+        ALL_POMS=()
+        while IFS= read -r file; do
+            ALL_POMS+=("$file")
+        done < <(find "${REPO_ROOT}" -type f -name "pom.xml" -not -path "*/target/*" 2>/dev/null)
+
+        # Only the root pom of each project is built — a pom nested under another
+        # pom's directory is treated as a module of that reactor, not a separate
+        # project, so it is built as part of its root rather than standalone
+        # (standalone would fail to resolve sibling-module dependencies that are
+        # only ever produced by the reactor, not installed to the repo cache).
+        POM_FILES=()
+        if [[ "${#ALL_POMS[@]}" -gt 0 ]]; then
+            for pom in "${ALL_POMS[@]}"; do
+                pom_dir="$(dirname "$pom")"
+                nested=0
+                for other in "${ALL_POMS[@]}"; do
+                    [[ "$other" == "$pom" ]] && continue
+                    other_dir="$(dirname "$other")"
+                    case "$pom_dir" in
+                        "$other_dir"/*) nested=1; break ;;
+                    esac
+                done
+                [[ "$nested" -eq 0 ]] && POM_FILES+=("$pom")
+            done
+        fi
+
+        if [[ "${#POM_FILES[@]}" -eq 0 ]]; then
+            log_info "No pom.xml found."
+        else
+            FOUND_ANY_MANIFEST=1
+            log_info "Found ${#POM_FILES[@]} root pom.xml file(s):"
+            for f in "${POM_FILES[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            for pom in "${POM_FILES[@]}"; do
+                pom_dir="$(dirname "${pom}")"
+                JAVA_PROJECT_DIRS+=("$pom_dir")
+
+                if [[ -x "${pom_dir}/mvnw" ]]; then
+                    MVN_CMD="${pom_dir}/mvnw"
+                    log_info "Using project wrapper: ${MVN_CMD}"
+                elif [[ -n "$MVN_BIN_DIR" && -x "${MVN_BIN_DIR}/mvn" ]]; then
+                    MVN_CMD="${MVN_BIN_DIR}/mvn"
+                    log_info "Using pinned Maven: ${MVN_CMD}"
+                elif command -v mvn >/dev/null 2>&1; then
+                    MVN_CMD="mvn"
+                    log_info "Using Maven from PATH"
+                else
+                    log_error "No Maven available for ${pom_dir} (no wrapper, no --mvn-bin-dir, nothing on PATH)"
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                # A pom using ${revision} with no default property fails to resolve
+                # on its own; supply a dummy value just to let resolve/compile run.
+                REVISION_ARGS=()
+                if grep -q '\${revision}' "$pom" 2>/dev/null && ! grep -q '<revision>' "$pom" 2>/dev/null; then
+                    REVISION_ARGS=(-Drevision=0.0.0-SNAPSHOT)
+                    log_info "pom uses \${revision} with no default — passing -Drevision=0.0.0-SNAPSHOT"
+                fi
+
+                # test-compile alone resolves the full dependency graph (direct and
+                # transitive, same as a standalone `dependency:resolve` would) because
+                # it needs the complete classpath to compile against. A separate
+                # `dependency:resolve` step beforehand was tried and dropped: unlike
+                # test-compile, it does not participate in the reactor, so it
+                # false-rejects any multi-module project where one module depends on
+                # a sibling module's artifact that only the reactor (not the repo
+                # cache) knows how to satisfy.
+                mvn_log="${WORKDIR}/mvn_compile.log"
+                : > "$mvn_log"
+                log_info "Running: mvn test-compile (cwd=${pom_dir})"
+                if (cd "${pom_dir}" && "${MVN_CMD}" -B -q \
+                        "${MVN_SETTINGS_ARGS[@]+"${MVN_SETTINGS_ARGS[@]}"}" \
+                        "${REVISION_ARGS[@]+"${REVISION_ARGS[@]}"}" \
+                        -Dmaven.repo.local="${M2_REPO}" test-compile >>"$mvn_log" 2>&1); then
+                    log_info "mvn test-compile succeeded for ${pom}"
+                else
+                    log_error "mvn test-compile FAILED for ${pom}. Redacted output follows:"
+                    print_redacted_log "$mvn_log"
                     ANY_INSTALL_FAILED=1
                 fi
             done
