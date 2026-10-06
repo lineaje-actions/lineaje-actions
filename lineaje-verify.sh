@@ -314,8 +314,24 @@ case "$LANGUAGE" in
             log_info "connect_to_fortknox=false — resolving Java dependencies from Maven Central only; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
         fi
 
-        M2_REPO="${WORKDIR}/m2-repo"
-        mkdir -p "$M2_REPO"
+        # A fresh -Dmaven.repo.local per invocation means every patched
+        # component re-downloads the same Maven-core plugins (compiler,
+        # resources, surefire, ...) and shared dependencies from scratch — for
+        # a fix plan touching several components that's the same download
+        # repeated several times over. Maven artifacts are immutable per
+        # version (the ${revision} dummy aside, nothing here is a SNAPSHOT), so
+        # a cache hit is always safe to reuse. SCRIPT_DIR (the veecli dir) is
+        # stable for the whole job — including across the several separate
+        # lineaje-verify.sh invocations veecli makes, one per patched component
+        # — unlike WORKDIR, which is a fresh mktemp per invocation. Falls back
+        # to WORKDIR when SCRIPT_DIR isn't writable (e.g. run by hand from a
+        # read-only checkout).
+        M2_REPO="${SCRIPT_DIR}/third_party/mvn-repo-cache"
+        if ! mkdir -p "$M2_REPO" 2>/dev/null; then
+            M2_REPO="${WORKDIR}/m2-repo"
+            mkdir -p "$M2_REPO"
+        fi
+        log_info "Using Maven local repository cache: ${M2_REPO}"
 
         # --task-dir only contains the specific file(s) this task patches, not the
         # whole project — a multi-module build needs the parent POM and sibling

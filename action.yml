@@ -354,6 +354,25 @@ runs:
         echo "CARGO_HOME=/opt/veecli/third_party/linux/cargo" >> "$GITHUB_ENV"
         echo "/opt/veecli/third_party/linux/cargo/bin" >> "$GITHUB_PATH"
 
+    # ── 4d. Cache Maven verify-hook dependency repository ─────────────────────
+    # fix_plan_gos_compat's lineaje-verify.sh runs `mvn test-compile` once per
+    # patched Java component, each pointed at the same -Dmaven.repo.local (see
+    # lineaje-verify.sh) — this caches that directory across workflow runs too,
+    # not just across the several invocations within one job. Unlike the
+    # runtimes cache above (fixed binaries, so a static key is fine), the set
+    # of resolved artifacts here grows as new CVE fixes get verified over time,
+    # so the key always misses — forcing a fresh save with anything new this
+    # run — while restore-keys still seeds the job from the most recent prior
+    # save.
+    - name: Cache Maven verify-hook dependency repository
+      if: inputs.scan_type == 'source' && inputs.language == 'java' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: /opt/veecli/third_party/mvn-repo-cache
+        key: veecli-mvn-verify-repo-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-mvn-verify-repo-cache-
+
     # ── 5. Run pre.sh ─────────────────────────────────────────────────────────
     - name: Run pre.sh
       if: env.VEECLI_ALREADY_SETUP != 'true'
