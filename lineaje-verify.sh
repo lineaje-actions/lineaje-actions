@@ -20,31 +20,35 @@
 #
 # Verifies the patched manifest for the selected language under the task
 # directory: requirements.txt through a Python venv, package.json through npm,
-# or pom.xml through Maven resolve + test-compile (no test execution — see the
-# java case below). A non-zero exit makes veecli skip the copy and fail the
-# agent.
+# pom.xml through Maven resolve + test-compile (no test execution — see the
+# java case below), or go.mod through `go build ./...`. A non-zero exit makes
+# veecli skip the copy and fail the agent.
 #
 # Usage:
-#   ./lineaje-verify.sh --task-dir DIR --language python|node|java \
-#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--repo-root DIR] \
-#       [--connect-to-fortknox true|false]
+#   ./lineaje-verify.sh --task-dir DIR --language python|node|java|go \
+#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--go-bin-dir DIR] \
+#       [--repo-root DIR] [--connect-to-fortknox true|false]
 #
-# --repo-root (java only) is the original full repository checkout, as opposed
-# to --task-dir, which veecli populates with only the specific file(s) a patch
-# task touches (e.g. just core/pom.xml out of a core+app reactor) — not a full
-# copy of the project. A Maven multi-module build needs the whole tree (parent
-# POM, sibling modules), so when --repo-root is given, the java case
-# reconstructs it: copy --repo-root, then overlay --task-dir's patched file(s)
-# on top at their same relative paths, and build that. Without --repo-root,
-# the java case falls back to treating --task-dir as the whole project, same
-# as the python/node cases do — correct only when the pom.xml has no parent
-# and no sibling modules.
+# --repo-root (java and go) is the original full repository checkout, as
+# opposed to --task-dir, which veecli populates with only the specific file(s)
+# a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
+# just go.mod out of a module with a local `replace` directive) — not a full
+# copy of the project. A Maven multi-module build needs the parent POM and
+# sibling modules; a Go module with a relative `replace` needs its target —
+# both need the whole tree. When --repo-root is given, these cases reconstruct
+# it: copy --repo-root, then overlay --task-dir's patched file(s) on top at
+# their same relative paths, and build that. Without --repo-root, they fall
+# back to treating --task-dir as the whole project, same as the python/node
+# cases do — correct only when there's no parent/sibling/replace-path
+# dependency.
 #
 # --connect-to-fortknox false (default true) makes the node case check
 # package.json against the public npm registry and the java case check pom.xml
 # against Maven Central instead of the Fortknox GOS premium registry, so
 # Lineaje-rebuilt (-lineaje-N) packages fail to resolve and their patches are
-# rejected. No effect on the python case, which never used Fortknox.
+# rejected. No effect on the python case, which never used Fortknox. No effect
+# on the go case either — there is no GOS/Fortknox Go module proxy yet, so it
+# always uses the public Go proxy regardless of this flag.
 #
 # Falls back to $LOCAL_TASK_DIR then $PWD when --task-dir is absent, so it works
 # both under veecli's Verify Local Files Agent and when run by hand. Unrecognised
@@ -119,6 +123,7 @@ REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
 MVN_BIN_DIR=""
+GO_BIN_DIR=""
 ORIG_REPO_ROOT=""
 CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
@@ -127,6 +132,7 @@ while [[ $# -gt 0 ]]; do
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
         --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
+        --go-bin-dir) GO_BIN_DIR="${2:-}"; shift 2 ;;
         --repo-root) ORIG_REPO_ROOT="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
@@ -164,6 +170,31 @@ cleanup_verify_artifacts() {
 }
 
 trap cleanup_verify_artifacts EXIT
+
+# --task-dir only contains the specific file(s) a patch task touches (e.g.
+# just core/pom.xml out of a core+app reactor, or just go.mod out of a module
+# with a local `replace` directive) — not a full copy of the project. Maven's
+# parent POM and Go's relative `replace` targets both need the whole tree to
+# resolve. When --repo-root (the real checkout) is available, reconstruct it:
+# copy --repo-root, then overlay --task-dir's patched file(s) on top at their
+# real relative paths, and build from that instead. Sets BUILD_ROOT. Without
+# --repo-root, falls back to treating --task-dir as the whole project —
+# correct only when there's no parent/sibling/replace-path dependency.
+reconstruct_build_root() {
+    if [[ -n "$ORIG_REPO_ROOT" && -d "$ORIG_REPO_ROOT" ]]; then
+        BUILD_ROOT="${WORKDIR}/project"
+        mkdir -p "$BUILD_ROOT"
+        log_info "Reconstructing full project at ${BUILD_ROOT} (base: ${ORIG_REPO_ROOT}, patched overlay: ${REPO_ROOT})"
+        cp -a "${ORIG_REPO_ROOT}/." "${BUILD_ROOT}/"
+        rm -rf "${BUILD_ROOT}/.git"
+        cp -a "${REPO_ROOT}/." "${BUILD_ROOT}/"
+        log_info "[debug] --- reconstructed project tree (${BUILD_ROOT}) ---"
+        find "${BUILD_ROOT}" -type f | sort
+        log_info "[debug] --- end of reconstructed project tree ---"
+    else
+        BUILD_ROOT="${REPO_ROOT}"
+    fi
+}
 
 case "$LANGUAGE" in
     python)
@@ -333,25 +364,7 @@ case "$LANGUAGE" in
         fi
         log_info "Using Maven local repository cache: ${M2_REPO}"
 
-        # --task-dir only contains the specific file(s) this task patches, not the
-        # whole project — a multi-module build needs the parent POM and sibling
-        # modules too. When --repo-root (the real checkout) is available,
-        # reconstruct the full tree there and overlay the patched file(s) on top
-        # at their real relative paths; otherwise fall back to building --task-dir
-        # as-is (correct only for a standalone, parent-less pom.xml).
-        if [[ -n "$ORIG_REPO_ROOT" && -d "$ORIG_REPO_ROOT" ]]; then
-            BUILD_ROOT="${WORKDIR}/project"
-            mkdir -p "$BUILD_ROOT"
-            log_info "Reconstructing full project at ${BUILD_ROOT} (base: ${ORIG_REPO_ROOT}, patched overlay: ${REPO_ROOT})"
-            cp -a "${ORIG_REPO_ROOT}/." "${BUILD_ROOT}/"
-            rm -rf "${BUILD_ROOT}/.git"
-            cp -a "${REPO_ROOT}/." "${BUILD_ROOT}/"
-            log_info "[debug] --- reconstructed project tree (${BUILD_ROOT}) ---"
-            find "${BUILD_ROOT}" -type f | sort
-            log_info "[debug] --- end of reconstructed project tree ---"
-        else
-            BUILD_ROOT="${REPO_ROOT}"
-        fi
+        reconstruct_build_root
 
         log_info "Searching recursively for pom.xml under ${BUILD_ROOT}"
         ALL_POMS=()
@@ -443,6 +456,123 @@ case "$LANGUAGE" in
                     log_error "mvn test-compile FAILED for ${pom} (see output above)"
                     ANY_INSTALL_FAILED=1
                 fi
+            done
+        fi
+        ;;
+    go)
+        # No GOS/Fortknox proxy for Go modules exists yet — always the public
+        # proxy, regardless of --connect-to-fortknox. Revisit once one exists
+        # (mirror the java/node case: a registry URL plus credentials wired
+        # through _gos_premium_env).
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            log_info "connect_to_fortknox=true requested, but no GOS premium Go proxy is configured yet — using the public Go proxy only"
+        else
+            log_info "connect_to_fortknox=false — using the public Go proxy only (same as today's default; no-op for Go)"
+        fi
+        GOPROXY_VALUE="https://proxy.golang.org,direct"
+
+        # Same reasoning as the Maven repo cache: a fresh GOMODCACHE/GOCACHE per
+        # invocation means every patched module re-downloads the same shared
+        # dependencies from scratch. Go modules are content-addressed and
+        # immutable once published, so a cache hit is always safe to reuse.
+        GOMODCACHE_DIR="${SCRIPT_DIR}/third_party/go-mod-cache"
+        if ! mkdir -p "$GOMODCACHE_DIR" 2>/dev/null; then
+            GOMODCACHE_DIR="${WORKDIR}/go-mod-cache"
+            mkdir -p "$GOMODCACHE_DIR"
+        fi
+        GOCACHE_DIR="${SCRIPT_DIR}/third_party/go-build-cache"
+        if ! mkdir -p "$GOCACHE_DIR" 2>/dev/null; then
+            GOCACHE_DIR="${WORKDIR}/go-build-cache"
+            mkdir -p "$GOCACHE_DIR"
+        fi
+        log_info "Using Go module cache: ${GOMODCACHE_DIR}"
+        log_info "Using Go build cache: ${GOCACHE_DIR}"
+
+        reconstruct_build_root
+
+        log_info "Searching recursively for go.mod under ${BUILD_ROOT}"
+        GO_MOD_FILES=()
+        while IFS= read -r file; do
+            GO_MOD_FILES+=("$file")
+        done < <(find "${BUILD_ROOT}" -type f -name "go.mod" -not -path "*/vendor/*" 2>/dev/null)
+
+        if [[ "${#GO_MOD_FILES[@]}" -eq 0 ]]; then
+            log_info "No go.mod found."
+        else
+            FOUND_ANY_MANIFEST=1
+            log_info "Found ${#GO_MOD_FILES[@]} go.mod file(s):"
+            for f in "${GO_MOD_FILES[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            for gomod in "${GO_MOD_FILES[@]}"; do
+                mod_dir="$(dirname "${gomod}")"
+
+                # "go build ./..." over a directory with no .go files at all
+                # matches zero packages and exits 0 — a silent false pass that
+                # verified nothing. That's the exact shape of the --task-dir-is-
+                # only-the-manifest problem --repo-root exists to fix; if it
+                # still happens (missing/broken --repo-root), fail loud instead
+                # of reporting success for a build that never actually ran.
+                if ! find "$mod_dir" -type f -name "*.go" -not -path "*/vendor/*" -print -quit 2>/dev/null | grep -q .; then
+                    log_error "No .go source files found under ${mod_dir} — cannot verify this go.mod (likely missing or unusable --repo-root). Treating as failed rather than reporting a no-op success."
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                if [[ -n "$GO_BIN_DIR" && -x "${GO_BIN_DIR}/go" ]]; then
+                    GO_CMD="${GO_BIN_DIR}/go"
+                    log_info "Using pinned Go: ${GO_CMD}"
+                elif command -v go >/dev/null 2>&1; then
+                    GO_CMD="go"
+                    log_info "Using Go from PATH"
+                else
+                    log_error "No Go available for ${mod_dir} (no --go-bin-dir, nothing on PATH)"
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                # A vendor/ directory implies -mod=vendor: no network call at
+                # all, so GOPROXY/the lack of a GOS proxy is moot for this module.
+                VENDOR_ARGS=()
+                if [[ -d "${mod_dir}/vendor" ]]; then
+                    VENDOR_ARGS=(-mod=vendor)
+                    log_info "vendor/ directory detected — building in vendor mode (no network)"
+                fi
+
+                # go build only ever writes an output file into mod_dir itself
+                # (never a subdirectory) and only when "./..." resolves to
+                # exactly one main package — everything else (library-only
+                # modules, multiple packages) compiles and discards, writing
+                # nothing. Rather than relying on that rule (and -o forcing an
+                # error when there's no main package to write — tried and
+                # dropped), snapshot mod_dir's top-level files before and after
+                # and remove whatever new executable shows up.
+                BEFORE_FILES="$(find "$mod_dir" -maxdepth 1 -type f 2>/dev/null | sort)"
+
+                go_log="${WORKDIR}/go_build.log"
+                : > "$go_log"
+                log_info "Running: go build ./... (cwd=${mod_dir})"
+                # [debug] output streamed live (redacted), same temporary
+                # verbosity as the java case — revert once Go support is done
+                # being tested.
+                if (cd "${mod_dir}" && GOPROXY="$GOPROXY_VALUE" GOMODCACHE="$GOMODCACHE_DIR" GOCACHE="$GOCACHE_DIR" \
+                        "${GO_CMD}" build "${VENDOR_ARGS[@]+"${VENDOR_ARGS[@]}"}" ./... 2>&1 \
+                        | tee "$go_log" \
+                        | sed -E 's#(https?://)[^[:space:]]*@#\1***:***@#g'); then
+                    log_info "go build succeeded for ${gomod}"
+                else
+                    log_error "go build FAILED for ${gomod} (see output above)"
+                    ANY_INSTALL_FAILED=1
+                fi
+
+                while IFS= read -r built_file; do
+                    [[ -n "$built_file" ]] || continue
+                    if [[ -x "$built_file" ]] && ! grep -qxF "$built_file" <<<"$BEFORE_FILES"; then
+                        log_info "Removing build output written to the module dir: ${built_file}"
+                        rm -f "$built_file"
+                    fi
+                done <<<"$(find "$mod_dir" -maxdepth 1 -type f 2>/dev/null | sort)"
             done
         fi
         ;;

@@ -85,7 +85,7 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js and Java source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java and Go source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
     required: false
     default: "scan_only"
   connect_to_fortknox:
@@ -223,8 +223,9 @@ runs:
         if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ] \
           && [ "${{ inputs.language }}" != "python" ] \
           && [ "${{ inputs.language }}" != "node" ] \
-          && [ "${{ inputs.language }}" != "java" ]; then
-          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python, Node.js and Java source scans"
+          && [ "${{ inputs.language }}" != "java" ] \
+          && [ "${{ inputs.language }}" != "golang" ]; then
+          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python, Node.js, Java and Go source scans"
           exit 1
         fi
 
@@ -372,6 +373,20 @@ runs:
         key: veecli-mvn-verify-repo-cache-${{ github.run_id }}
         restore-keys: |
           veecli-mvn-verify-repo-cache-
+
+    # ── 4e. Cache Go verify-hook module/build cache ───────────────────────────
+    # Same reasoning as 4d, for fix_plan_gos_compat's `go build ./...` — GOMODCACHE
+    # and GOCACHE both live under third_party so a single cache step covers both.
+    - name: Cache Go verify-hook module/build cache
+      if: inputs.scan_type == 'source' && inputs.language == 'golang' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: |
+          /opt/veecli/third_party/go-mod-cache
+          /opt/veecli/third_party/go-build-cache
+        key: veecli-go-verify-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-go-verify-cache-
 
     # ── 5. Run pre.sh ─────────────────────────────────────────────────────────
     - name: Run pre.sh

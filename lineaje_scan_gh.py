@@ -1701,6 +1701,12 @@ def _maven_bin_dir() -> str:
     return str(THIRD_PARTY / MAVEN_DIR / "bin")
 
 
+def _go_bin_dir(version: str) -> str:
+    """setup_go_runtime installs into third_party/linux/go-{minor} keyed by the
+    minor version string itself (e.g. "1.21"), not a resolved patch version."""
+    return str(THIRD_PARTY / f"go-{version}" / "bin") if version in GO_VERSIONS else ""
+
+
 def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe",
                      language: str = "", language_version: str = "",
                      connect_to_fortknox: bool = True, repo_root: str = "",
@@ -1720,14 +1726,18 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
     arg) to check Node.js manifests against the public npm registry and Java
     manifests against Maven Central instead of Fortknox, so any patch that
     needed a Lineaje-rebuilt version fails to resolve and is rejected rather
-    than uploaded. No effect on Python, whose verification never used Fortknox.
+    than uploaded. No effect on Python, whose verification never used Fortknox,
+    or on Go — there is no GOS/Fortknox Go module proxy yet, so the go case
+    always uses the public Go proxy regardless of this flag.
 
-    repo_root (java only): the original full checkout, passed to the hook as
-    --repo-root. veecli's --task-dir contains only the specific file(s) a patch
-    task touches (e.g. just core/pom.xml out of a core+app reactor), not the
+    repo_root (java and golang only): the original full checkout, passed to the
+    hook as --repo-root. veecli's --task-dir contains only the specific file(s)
+    a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
+    just go.mod out of a module with a local `replace` directive), not the
     whole project — a Maven multi-module build needs the parent POM and sibling
-    modules too, so the hook reconstructs the full tree from repo_root and
-    overlays the patched file(s) from --task-dir on top of it.
+    modules, and a Go module's relative `replace` target needs its own tree, so
+    the hook reconstructs the full tree from repo_root and overlays the patched
+    file(s) from --task-dir on top of it.
     """
     veecli_dir = Path(veecli_path).parent
 
@@ -1777,7 +1787,8 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
         MVN_BIN_DIR=_maven_bin_dir() if language == "java" else "",
-        REPO_ROOT=str(Path(repo_root).resolve()) if (language == "java" and repo_root) else "",
+        GO_BIN_DIR=_go_bin_dir(language_version) if language == "golang" else "",
+        REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"java", "golang"} and repo_root) else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
@@ -2349,7 +2360,7 @@ def main():
     parser.add_argument("--skip-fix-plan", action="store_true", default=False, help="Skip fix plan after scan")
     parser.add_argument("--gos-fix-plan", action="store_true", default=False,
                         help="After the fix plan, apply it via the GPT service and run `veecli fix` to "
-                            "download patched manifests (Python, Node.js and Java source scans only)")
+                            "download patched manifests (Python, Node.js, Java and Go source scans only)")
     parser.add_argument("--output-fix-dir", default="",
                         help="Where `veecli fix` writes patched manifests (default: <output-dir>/fix)")
     parser.add_argument("--no-connect-to-fortknox", action="store_true", default=False,
@@ -2406,8 +2417,8 @@ def main():
     # for it to act on in image mode.
     if args.gos_fix_plan and scan_mode != "source":
         sys.exit("[error] --gos-fix-plan is only supported for source scans")
-    if args.gos_fix_plan and args.language not in {"python", "node", "java"}:
-        sys.exit("[error] --gos-fix-plan is only supported for Python, Node.js and Java source scans")
+    if args.gos_fix_plan and args.language not in {"python", "node", "java", "golang"}:
+        sys.exit("[error] --gos-fix-plan is only supported for Python, Node.js, Java and Go source scans")
     if args.gos_fix_plan and args.skip_fix_plan:
         sys.exit("[error] --gos-fix-plan cannot be combined with --skip-fix-plan")
 
