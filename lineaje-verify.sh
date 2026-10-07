@@ -188,9 +188,6 @@ reconstruct_build_root() {
         cp -a "${ORIG_REPO_ROOT}/." "${BUILD_ROOT}/"
         rm -rf "${BUILD_ROOT}/.git"
         cp -a "${REPO_ROOT}/." "${BUILD_ROOT}/"
-        log_info "[debug] --- reconstructed project tree (${BUILD_ROOT}) ---"
-        find "${BUILD_ROOT}" -type f | sort
-        log_info "[debug] --- end of reconstructed project tree ---"
     else
         BUILD_ROOT="${REPO_ROOT}"
     fi
@@ -203,6 +200,18 @@ case "$LANGUAGE" in
             unset PIP_EXTRA_INDEX_URL
             log_info "Using pip configuration: ${PIP_CONFIG}"
         fi
+
+        # Same reasoning as the Maven repo cache below: pip's wheel/http cache
+        # is keyed by content, so reuse is safe, and pinning it under
+        # SCRIPT_DIR makes it explicit and cacheable across workflow runs
+        # (the venv itself is still fresh per invocation).
+        PIP_CACHE="${SCRIPT_DIR}/third_party/pip-verify-cache"
+        if ! mkdir -p "$PIP_CACHE" 2>/dev/null; then
+            PIP_CACHE="${WORKDIR}/pip-cache"
+            mkdir -p "$PIP_CACHE"
+        fi
+        export PIP_CACHE_DIR="$PIP_CACHE"
+        log_info "Using pip cache: ${PIP_CACHE}"
 
         log_info "Searching recursively for requirements.txt under ${REPO_ROOT}"
         REQUIREMENTS_FILES=()
@@ -272,8 +281,15 @@ case "$LANGUAGE" in
         fi
         log_info "Using npm registry: ${NPM_REGISTRY}"
 
-        NPM_CACHE_DIR="${WORKDIR}/npm-cache"
-        mkdir -p "$NPM_CACHE_DIR"
+        # Same reasoning as the Maven repo cache below: npm's cache is
+        # content-addressed (integrity-checked tarballs), so a hit is always
+        # safe to reuse, and SCRIPT_DIR persists across the several
+        # lineaje-verify.sh invocations veecli makes — WORKDIR does not.
+        NPM_CACHE_DIR="${SCRIPT_DIR}/third_party/npm-verify-cache"
+        if ! mkdir -p "$NPM_CACHE_DIR" 2>/dev/null; then
+            NPM_CACHE_DIR="${WORKDIR}/npm-cache"
+            mkdir -p "$NPM_CACHE_DIR"
+        fi
         log_info "Searching recursively for package.json under ${REPO_ROOT}"
         PACKAGE_JSON_FILES=()
         while IFS= read -r file; do
@@ -322,22 +338,11 @@ case "$LANGUAGE" in
         fi
         ;;
     java)
-        # ---- TEMP verbose debugging (Java support still under test — revert
-        # before merging): logs the settings.xml actually in use, the
-        # GOS_PREMIUM_MAVEN_REGISTRY env var veecli should have exported, and
-        # the reconstructed project tree, and drops mvn's -q flag so Maven's
-        # own INFO-level repository/download lines show up instead of only
-        # appearing (redacted) after a failure. ----
-        log_info "[debug] GOS_PREMIUM_MAVEN_REGISTRY=${GOS_PREMIUM_MAVEN_REGISTRY:-<unset>}"
-
         MVN_SETTINGS_ARGS=()
         if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
             if [[ -f "$MAVEN_SETTINGS" ]]; then
                 MVN_SETTINGS_ARGS=(-s "$MAVEN_SETTINGS")
                 log_info "Using maven settings: ${MAVEN_SETTINGS}"
-                log_info "[debug] --- ${MAVEN_SETTINGS} ---"
-                print_redacted_log "$MAVEN_SETTINGS"
-                log_info "[debug] --- end of ${MAVEN_SETTINGS} ---"
             else
                 log_error "lineaje-verify-settings.xml not found; GOS-rebuilt artifacts will not resolve"
             fi
@@ -440,20 +445,14 @@ case "$LANGUAGE" in
                 mvn_log="${WORKDIR}/mvn_compile.log"
                 : > "$mvn_log"
                 log_info "Running: mvn test-compile (cwd=${pom_dir})"
-                # [debug] -q dropped and output streamed live (redacted) rather than
-                # only dumped on failure, so Maven's own repository/download lines
-                # (confirms whether the GOS registry actually resolves) show up
-                # as they happen — revert to -q + print-only-on-failure once Java
-                # support is done being tested.
-                if (cd "${pom_dir}" && "${MVN_CMD}" -B \
+                if (cd "${pom_dir}" && "${MVN_CMD}" -B -q \
                         "${MVN_SETTINGS_ARGS[@]+"${MVN_SETTINGS_ARGS[@]}"}" \
                         "${REVISION_ARGS[@]+"${REVISION_ARGS[@]}"}" \
-                        -Dmaven.repo.local="${M2_REPO}" test-compile 2>&1 \
-                        | tee "$mvn_log" \
-                        | sed -E 's#(https?://)[^[:space:]]*@#\1***:***@#g'); then
+                        -Dmaven.repo.local="${M2_REPO}" test-compile >"$mvn_log" 2>&1); then
                     log_info "mvn test-compile succeeded for ${pom}"
                 else
-                    log_error "mvn test-compile FAILED for ${pom} (see output above)"
+                    log_error "mvn test-compile FAILED for ${pom}"
+                    print_redacted_log "$mvn_log"
                     ANY_INSTALL_FAILED=1
                 fi
             done
