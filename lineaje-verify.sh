@@ -18,19 +18,37 @@
 # write_fix_config() in lineaje_scan_gh.py copies it into the veecli directory
 # and points fix.yaml's verify-local-files-actions at that copy.
 #
-# Installs dependencies for the selected language under the task directory:
-# requirements.txt through a Python venv, or package.json through npm. A
-# non-zero exit makes veecli skip the copy and fail the agent.
+# Verifies the patched manifest for the selected language under the task
+# directory: requirements.txt through a Python venv, package.json through npm,
+# pom.xml through Maven resolve + test-compile (no test execution — see the
+# java case below), or go.mod through `go build ./...`. A non-zero exit makes
+# veecli skip the copy and fail the agent.
 #
 # Usage:
-#   ./lineaje-verify.sh --task-dir DIR --language python|node [--node-bin-dir DIR] \
-#       [--connect-to-fortknox true|false]
+#   ./lineaje-verify.sh --task-dir DIR --language python|node|java|go \
+#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--go-bin-dir DIR] \
+#       [--repo-root DIR] [--connect-to-fortknox true|false]
+#
+# --repo-root (java and go) is the original full repository checkout, as
+# opposed to --task-dir, which veecli populates with only the specific file(s)
+# a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
+# just go.mod out of a module with a local `replace` directive) — not a full
+# copy of the project. A Maven multi-module build needs the parent POM and
+# sibling modules; a Go module with a relative `replace` needs its target —
+# both need the whole tree. When --repo-root is given, these cases reconstruct
+# it: copy --repo-root, then overlay --task-dir's patched file(s) on top at
+# their same relative paths, and build that. Without --repo-root, they fall
+# back to treating --task-dir as the whole project, same as the python/node
+# cases do — correct only when there's no parent/sibling/replace-path
+# dependency.
 #
 # --connect-to-fortknox false (default true) makes the node case check
-# package.json against the public npm registry instead of the Fortknox GOS
-# premium registry, so Lineaje-rebuilt (-lineaje-N) packages fail to resolve
-# and their patches are rejected. No effect on the python case, which never
-# used Fortknox.
+# package.json against the public npm registry and the java case check pom.xml
+# against Maven Central instead of the Fortknox GOS premium registry, so
+# Lineaje-rebuilt (-lineaje-N) packages fail to resolve and their patches are
+# rejected. No effect on the python case, which never used Fortknox. No effect
+# on the go case either — there is no GOS/Fortknox Go module proxy yet, so it
+# always uses the public Go proxy regardless of this flag.
 #
 # Falls back to $LOCAL_TASK_DIR then $PWD when --task-dir is absent, so it works
 # both under veecli's Verify Local Files Agent and when run by hand. Unrecognised
@@ -99,16 +117,23 @@ NODE
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIP_CONFIG="${SCRIPT_DIR}/lineaje-verify-pip.conf"
 NPM_CONFIG="${SCRIPT_DIR}/lineaje-verify.npmrc"
+MAVEN_SETTINGS="${SCRIPT_DIR}/lineaje-verify-settings.xml"
 
 REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
+MVN_BIN_DIR=""
+GO_BIN_DIR=""
+ORIG_REPO_ROOT=""
 CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --task-dir) REPO_ROOT="${2:-}"; shift 2 ;;
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
+        --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
+        --go-bin-dir) GO_BIN_DIR="${2:-}"; shift 2 ;;
+        --repo-root) ORIG_REPO_ROOT="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
     esac
@@ -125,18 +150,48 @@ FOUND_ANY_MANIFEST=0
 ANY_INSTALL_FAILED=0
 NODE_PACKAGE_DIRS=()
 GENERATED_LOCKFILES=()
+JAVA_PROJECT_DIRS=()
 
-cleanup_node_install_artifacts() {
-    local package_dir lockfile
-    for package_dir in "${NODE_PACKAGE_DIRS[@]}"; do
+cleanup_verify_artifacts() {
+    # The "${ARR[@]+"${ARR[@]}"}" form (rather than plain "${ARR[@]}") avoids an
+    # "unbound variable" error under `set -u` when the array is empty on bash
+    # versions older than 4.4 — this trap always runs, including when nothing
+    # of that kind was found.
+    local package_dir lockfile project_dir
+    for package_dir in "${NODE_PACKAGE_DIRS[@]+"${NODE_PACKAGE_DIRS[@]}"}"; do
         rm -rf "${package_dir}/node_modules"
     done
-    for lockfile in "${GENERATED_LOCKFILES[@]}"; do
+    for lockfile in "${GENERATED_LOCKFILES[@]+"${GENERATED_LOCKFILES[@]}"}"; do
         rm -f "$lockfile"
+    done
+    for project_dir in "${JAVA_PROJECT_DIRS[@]+"${JAVA_PROJECT_DIRS[@]}"}"; do
+        find "$project_dir" -type d -name target -prune -exec rm -rf {} +
     done
 }
 
-trap cleanup_node_install_artifacts EXIT
+trap cleanup_verify_artifacts EXIT
+
+# --task-dir only contains the specific file(s) a patch task touches (e.g.
+# just core/pom.xml out of a core+app reactor, or just go.mod out of a module
+# with a local `replace` directive) — not a full copy of the project. Maven's
+# parent POM and Go's relative `replace` targets both need the whole tree to
+# resolve. When --repo-root (the real checkout) is available, reconstruct it:
+# copy --repo-root, then overlay --task-dir's patched file(s) on top at their
+# real relative paths, and build from that instead. Sets BUILD_ROOT. Without
+# --repo-root, falls back to treating --task-dir as the whole project —
+# correct only when there's no parent/sibling/replace-path dependency.
+reconstruct_build_root() {
+    if [[ -n "$ORIG_REPO_ROOT" && -d "$ORIG_REPO_ROOT" ]]; then
+        BUILD_ROOT="${WORKDIR}/project"
+        mkdir -p "$BUILD_ROOT"
+        log_info "Reconstructing full project at ${BUILD_ROOT} (base: ${ORIG_REPO_ROOT}, patched overlay: ${REPO_ROOT})"
+        cp -a "${ORIG_REPO_ROOT}/." "${BUILD_ROOT}/"
+        rm -rf "${BUILD_ROOT}/.git"
+        cp -a "${REPO_ROOT}/." "${BUILD_ROOT}/"
+    else
+        BUILD_ROOT="${REPO_ROOT}"
+    fi
+}
 
 case "$LANGUAGE" in
     python)
@@ -145,6 +200,18 @@ case "$LANGUAGE" in
             unset PIP_EXTRA_INDEX_URL
             log_info "Using pip configuration: ${PIP_CONFIG}"
         fi
+
+        # Same reasoning as the Maven repo cache below: pip's wheel/http cache
+        # is keyed by content, so reuse is safe, and pinning it under
+        # SCRIPT_DIR makes it explicit and cacheable across workflow runs
+        # (the venv itself is still fresh per invocation).
+        PIP_CACHE="${SCRIPT_DIR}/third_party/pip-verify-cache"
+        if ! mkdir -p "$PIP_CACHE" 2>/dev/null; then
+            PIP_CACHE="${WORKDIR}/pip-cache"
+            mkdir -p "$PIP_CACHE"
+        fi
+        export PIP_CACHE_DIR="$PIP_CACHE"
+        log_info "Using pip cache: ${PIP_CACHE}"
 
         log_info "Searching recursively for requirements.txt under ${REPO_ROOT}"
         REQUIREMENTS_FILES=()
@@ -214,8 +281,15 @@ case "$LANGUAGE" in
         fi
         log_info "Using npm registry: ${NPM_REGISTRY}"
 
-        NPM_CACHE_DIR="${WORKDIR}/npm-cache"
-        mkdir -p "$NPM_CACHE_DIR"
+        # Same reasoning as the Maven repo cache below: npm's cache is
+        # content-addressed (integrity-checked tarballs), so a hit is always
+        # safe to reuse, and SCRIPT_DIR persists across the several
+        # lineaje-verify.sh invocations veecli makes — WORKDIR does not.
+        NPM_CACHE_DIR="${SCRIPT_DIR}/third_party/npm-verify-cache"
+        if ! mkdir -p "$NPM_CACHE_DIR" 2>/dev/null; then
+            NPM_CACHE_DIR="${WORKDIR}/npm-cache"
+            mkdir -p "$NPM_CACHE_DIR"
+        fi
         log_info "Searching recursively for package.json under ${REPO_ROOT}"
         PACKAGE_JSON_FILES=()
         while IFS= read -r file; do
@@ -260,6 +334,244 @@ case "$LANGUAGE" in
                     print_redacted_log "$npm_log"
                     ANY_INSTALL_FAILED=1
                 fi
+            done
+        fi
+        ;;
+    java)
+        MVN_SETTINGS_ARGS=()
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            if [[ -f "$MAVEN_SETTINGS" ]]; then
+                MVN_SETTINGS_ARGS=(-s "$MAVEN_SETTINGS")
+                log_info "Using maven settings: ${MAVEN_SETTINGS}"
+            else
+                log_error "lineaje-verify-settings.xml not found; GOS-rebuilt artifacts will not resolve"
+            fi
+        else
+            log_info "connect_to_fortknox=false — resolving Java dependencies from Maven Central only; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
+        fi
+
+        # A fresh -Dmaven.repo.local per invocation means every patched
+        # component re-downloads the same Maven-core plugins (compiler,
+        # resources, surefire, ...) and shared dependencies from scratch — for
+        # a fix plan touching several components that's the same download
+        # repeated several times over. Maven artifacts are immutable per
+        # version (the ${revision} dummy aside, nothing here is a SNAPSHOT), so
+        # a cache hit is always safe to reuse. SCRIPT_DIR (the veecli dir) is
+        # stable for the whole job — including across the several separate
+        # lineaje-verify.sh invocations veecli makes, one per patched component
+        # — unlike WORKDIR, which is a fresh mktemp per invocation. Falls back
+        # to WORKDIR when SCRIPT_DIR isn't writable (e.g. run by hand from a
+        # read-only checkout).
+        M2_REPO="${SCRIPT_DIR}/third_party/mvn-repo-cache"
+        if ! mkdir -p "$M2_REPO" 2>/dev/null; then
+            M2_REPO="${WORKDIR}/m2-repo"
+            mkdir -p "$M2_REPO"
+        fi
+        log_info "Using Maven local repository cache: ${M2_REPO}"
+
+        reconstruct_build_root
+
+        log_info "Searching recursively for pom.xml under ${BUILD_ROOT}"
+        ALL_POMS=()
+        while IFS= read -r file; do
+            ALL_POMS+=("$file")
+        done < <(find "${BUILD_ROOT}" -type f -name "pom.xml" -not -path "*/target/*" 2>/dev/null)
+
+        # Only the root pom of each project is built — a pom nested under another
+        # pom's directory is treated as a module of that reactor, not a separate
+        # project, so it is built as part of its root rather than standalone
+        # (standalone would fail to resolve sibling-module dependencies that are
+        # only ever produced by the reactor, not installed to the repo cache).
+        POM_FILES=()
+        if [[ "${#ALL_POMS[@]}" -gt 0 ]]; then
+            for pom in "${ALL_POMS[@]}"; do
+                pom_dir="$(dirname "$pom")"
+                nested=0
+                for other in "${ALL_POMS[@]}"; do
+                    [[ "$other" == "$pom" ]] && continue
+                    other_dir="$(dirname "$other")"
+                    case "$pom_dir" in
+                        "$other_dir"/*) nested=1; break ;;
+                    esac
+                done
+                [[ "$nested" -eq 0 ]] && POM_FILES+=("$pom")
+            done
+        fi
+
+        if [[ "${#POM_FILES[@]}" -eq 0 ]]; then
+            log_info "No pom.xml found."
+        else
+            FOUND_ANY_MANIFEST=1
+            log_info "Found ${#POM_FILES[@]} root pom.xml file(s):"
+            for f in "${POM_FILES[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            for pom in "${POM_FILES[@]}"; do
+                pom_dir="$(dirname "${pom}")"
+                JAVA_PROJECT_DIRS+=("$pom_dir")
+
+                if [[ -x "${pom_dir}/mvnw" ]]; then
+                    MVN_CMD="${pom_dir}/mvnw"
+                    log_info "Using project wrapper: ${MVN_CMD}"
+                elif [[ -n "$MVN_BIN_DIR" && -x "${MVN_BIN_DIR}/mvn" ]]; then
+                    MVN_CMD="${MVN_BIN_DIR}/mvn"
+                    log_info "Using pinned Maven: ${MVN_CMD}"
+                elif command -v mvn >/dev/null 2>&1; then
+                    MVN_CMD="mvn"
+                    log_info "Using Maven from PATH"
+                else
+                    log_error "No Maven available for ${pom_dir} (no wrapper, no --mvn-bin-dir, nothing on PATH)"
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                # A pom using ${revision} with no default property fails to resolve
+                # on its own; supply a dummy value just to let resolve/compile run.
+                REVISION_ARGS=()
+                if grep -q '\${revision}' "$pom" 2>/dev/null && ! grep -q '<revision>' "$pom" 2>/dev/null; then
+                    REVISION_ARGS=(-Drevision=0.0.0-SNAPSHOT)
+                    log_info "pom uses \${revision} with no default — passing -Drevision=0.0.0-SNAPSHOT"
+                fi
+
+                # test-compile alone resolves the full dependency graph (direct and
+                # transitive, same as a standalone `dependency:resolve` would) because
+                # it needs the complete classpath to compile against. A separate
+                # `dependency:resolve` step beforehand was tried and dropped: unlike
+                # test-compile, it does not participate in the reactor, so it
+                # false-rejects any multi-module project where one module depends on
+                # a sibling module's artifact that only the reactor (not the repo
+                # cache) knows how to satisfy.
+                mvn_log="${WORKDIR}/mvn_compile.log"
+                : > "$mvn_log"
+                log_info "Running: mvn test-compile (cwd=${pom_dir})"
+                if (cd "${pom_dir}" && "${MVN_CMD}" -B -q \
+                        "${MVN_SETTINGS_ARGS[@]+"${MVN_SETTINGS_ARGS[@]}"}" \
+                        "${REVISION_ARGS[@]+"${REVISION_ARGS[@]}"}" \
+                        -Dmaven.repo.local="${M2_REPO}" test-compile >"$mvn_log" 2>&1); then
+                    log_info "mvn test-compile succeeded for ${pom}"
+                else
+                    log_error "mvn test-compile FAILED for ${pom}"
+                    print_redacted_log "$mvn_log"
+                    ANY_INSTALL_FAILED=1
+                fi
+            done
+        fi
+        ;;
+    go)
+        # No GOS/Fortknox proxy for Go modules exists yet — always the public
+        # proxy, regardless of --connect-to-fortknox. Revisit once one exists
+        # (mirror the java/node case: a registry URL plus credentials wired
+        # through _gos_premium_env).
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            log_info "connect_to_fortknox=true requested, but no GOS premium Go proxy is configured yet — using the public Go proxy only"
+        else
+            log_info "connect_to_fortknox=false — using the public Go proxy only (same as today's default; no-op for Go)"
+        fi
+        GOPROXY_VALUE="https://proxy.golang.org,direct"
+
+        # Same reasoning as the Maven repo cache: a fresh GOMODCACHE/GOCACHE per
+        # invocation means every patched module re-downloads the same shared
+        # dependencies from scratch. Go modules are content-addressed and
+        # immutable once published, so a cache hit is always safe to reuse.
+        GOMODCACHE_DIR="${SCRIPT_DIR}/third_party/go-mod-cache"
+        if ! mkdir -p "$GOMODCACHE_DIR" 2>/dev/null; then
+            GOMODCACHE_DIR="${WORKDIR}/go-mod-cache"
+            mkdir -p "$GOMODCACHE_DIR"
+        fi
+        GOCACHE_DIR="${SCRIPT_DIR}/third_party/go-build-cache"
+        if ! mkdir -p "$GOCACHE_DIR" 2>/dev/null; then
+            GOCACHE_DIR="${WORKDIR}/go-build-cache"
+            mkdir -p "$GOCACHE_DIR"
+        fi
+        log_info "Using Go module cache: ${GOMODCACHE_DIR}"
+        log_info "Using Go build cache: ${GOCACHE_DIR}"
+
+        reconstruct_build_root
+
+        log_info "Searching recursively for go.mod under ${BUILD_ROOT}"
+        GO_MOD_FILES=()
+        while IFS= read -r file; do
+            GO_MOD_FILES+=("$file")
+        done < <(find "${BUILD_ROOT}" -type f -name "go.mod" -not -path "*/vendor/*" 2>/dev/null)
+
+        if [[ "${#GO_MOD_FILES[@]}" -eq 0 ]]; then
+            log_info "No go.mod found."
+        else
+            FOUND_ANY_MANIFEST=1
+            log_info "Found ${#GO_MOD_FILES[@]} go.mod file(s):"
+            for f in "${GO_MOD_FILES[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            for gomod in "${GO_MOD_FILES[@]}"; do
+                mod_dir="$(dirname "${gomod}")"
+
+                # "go build ./..." over a directory with no .go files at all
+                # matches zero packages and exits 0 — a silent false pass that
+                # verified nothing. That's the exact shape of the --task-dir-is-
+                # only-the-manifest problem --repo-root exists to fix; if it
+                # still happens (missing/broken --repo-root), fail loud instead
+                # of reporting success for a build that never actually ran.
+                if ! find "$mod_dir" -type f -name "*.go" -not -path "*/vendor/*" -print -quit 2>/dev/null | grep -q .; then
+                    log_error "No .go source files found under ${mod_dir} — cannot verify this go.mod (likely missing or unusable --repo-root). Treating as failed rather than reporting a no-op success."
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                if [[ -n "$GO_BIN_DIR" && -x "${GO_BIN_DIR}/go" ]]; then
+                    GO_CMD="${GO_BIN_DIR}/go"
+                    log_info "Using pinned Go: ${GO_CMD}"
+                elif command -v go >/dev/null 2>&1; then
+                    GO_CMD="go"
+                    log_info "Using Go from PATH"
+                else
+                    log_error "No Go available for ${mod_dir} (no --go-bin-dir, nothing on PATH)"
+                    ANY_INSTALL_FAILED=1
+                    continue
+                fi
+
+                # A vendor/ directory implies -mod=vendor: no network call at
+                # all, so GOPROXY/the lack of a GOS proxy is moot for this module.
+                VENDOR_ARGS=()
+                if [[ -d "${mod_dir}/vendor" ]]; then
+                    VENDOR_ARGS=(-mod=vendor)
+                    log_info "vendor/ directory detected — building in vendor mode (no network)"
+                fi
+
+                # go build only ever writes an output file into mod_dir itself
+                # (never a subdirectory) and only when "./..." resolves to
+                # exactly one main package — everything else (library-only
+                # modules, multiple packages) compiles and discards, writing
+                # nothing. Rather than relying on that rule (and -o forcing an
+                # error when there's no main package to write — tried and
+                # dropped), snapshot mod_dir's top-level files before and after
+                # and remove whatever new executable shows up.
+                BEFORE_FILES="$(find "$mod_dir" -maxdepth 1 -type f 2>/dev/null | sort)"
+
+                go_log="${WORKDIR}/go_build.log"
+                : > "$go_log"
+                log_info "Running: go build ./... (cwd=${mod_dir})"
+                # [debug] output streamed live (redacted), same temporary
+                # verbosity as the java case — revert once Go support is done
+                # being tested.
+                if (cd "${mod_dir}" && GOPROXY="$GOPROXY_VALUE" GOMODCACHE="$GOMODCACHE_DIR" GOCACHE="$GOCACHE_DIR" \
+                        "${GO_CMD}" build "${VENDOR_ARGS[@]+"${VENDOR_ARGS[@]}"}" ./... 2>&1 \
+                        | tee "$go_log" \
+                        | sed -E 's#(https?://)[^[:space:]]*@#\1***:***@#g'); then
+                    log_info "go build succeeded for ${gomod}"
+                else
+                    log_error "go build FAILED for ${gomod} (see output above)"
+                    ANY_INSTALL_FAILED=1
+                fi
+
+                while IFS= read -r built_file; do
+                    [[ -n "$built_file" ]] || continue
+                    if [[ -x "$built_file" ]] && ! grep -qxF "$built_file" <<<"$BEFORE_FILES"; then
+                        log_info "Removing build output written to the module dir: ${built_file}"
+                        rm -f "$built_file"
+                    fi
+                done <<<"$(find "$mod_dir" -maxdepth 1 -type f 2>/dev/null | sort)"
             done
         fi
         ;;

@@ -85,7 +85,7 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan | fix_plan_gos_compat (Python and Node.js source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java and Go source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
     required: false
     default: "scan_only"
   connect_to_fortknox:
@@ -222,8 +222,10 @@ runs:
         fi
         if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ] \
           && [ "${{ inputs.language }}" != "python" ] \
-          && [ "${{ inputs.language }}" != "node" ]; then
-          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python and Node.js source scans"
+          && [ "${{ inputs.language }}" != "node" ] \
+          && [ "${{ inputs.language }}" != "java" ] \
+          && [ "${{ inputs.language }}" != "golang" ]; then
+          echo "[error] post_scan=fix_plan_gos_compat is only supported for Python, Node.js, Java and Go source scans"
           exit 1
         fi
 
@@ -352,6 +354,60 @@ runs:
         echo "RUSTUP_HOME=/opt/veecli/third_party/linux/rustup" >> "$GITHUB_ENV"
         echo "CARGO_HOME=/opt/veecli/third_party/linux/cargo" >> "$GITHUB_ENV"
         echo "/opt/veecli/third_party/linux/cargo/bin" >> "$GITHUB_PATH"
+
+    # ── 4d. Cache Maven verify-hook dependency repository ─────────────────────
+    # fix_plan_gos_compat's lineaje-verify.sh runs `mvn test-compile` once per
+    # patched Java component, each pointed at the same -Dmaven.repo.local (see
+    # lineaje-verify.sh) — this caches that directory across workflow runs too,
+    # not just across the several invocations within one job. Unlike the
+    # runtimes cache above (fixed binaries, so a static key is fine), the set
+    # of resolved artifacts here grows as new CVE fixes get verified over time,
+    # so the key always misses — forcing a fresh save with anything new this
+    # run — while restore-keys still seeds the job from the most recent prior
+    # save.
+    - name: Cache Maven verify-hook dependency repository
+      if: inputs.scan_type == 'source' && inputs.language == 'java' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: /opt/veecli/third_party/mvn-repo-cache
+        key: veecli-mvn-verify-repo-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-mvn-verify-repo-cache-
+
+    # ── 4e. Cache Go verify-hook module/build cache ───────────────────────────
+    # Same reasoning as 4d, for fix_plan_gos_compat's `go build ./...` — GOMODCACHE
+    # and GOCACHE both live under third_party so a single cache step covers both.
+    - name: Cache Go verify-hook module/build cache
+      if: inputs.scan_type == 'source' && inputs.language == 'golang' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: |
+          /opt/veecli/third_party/go-mod-cache
+          /opt/veecli/third_party/go-build-cache
+        key: veecli-go-verify-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-go-verify-cache-
+
+    # ── 4f. Cache npm / pip verify-hook caches ───────────────────────────────
+    # Same reasoning as 4d, for fix_plan_gos_compat's `npm install` (Node) and
+    # `pip install` (Python) runs — both caches live under third_party.
+    - name: Cache Node verify-hook npm cache
+      if: inputs.scan_type == 'source' && inputs.language == 'node' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: /opt/veecli/third_party/npm-verify-cache
+        key: veecli-npm-verify-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-npm-verify-cache-
+
+    - name: Cache Python verify-hook pip cache
+      if: inputs.scan_type == 'source' && inputs.language == 'python' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: /opt/veecli/third_party/pip-verify-cache
+        key: veecli-pip-verify-cache-${{ github.run_id }}
+        restore-keys: |
+          veecli-pip-verify-cache-
 
     # ── 5. Run pre.sh ─────────────────────────────────────────────────────────
     - name: Run pre.sh
@@ -714,4 +770,5 @@ runs:
         path: |
           ${{ inputs.output_dir }}/fix
           !${{ inputs.output_dir }}/fix/**/node_modules/**
+          !${{ inputs.output_dir }}/fix/**/target/**
         if-no-files-found: ignore

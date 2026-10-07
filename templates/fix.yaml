@@ -23,6 +23,12 @@ config:
           - "__LANGUAGE__"
           - "--node-bin-dir"
           - "__NODE_BIN_DIR__"
+          - "--mvn-bin-dir"
+          - "__MVN_BIN_DIR__"
+          - "--go-bin-dir"
+          - "__GO_BIN_DIR__"
+          - "--repo-root"
+          - "__REPO_ROOT__"
           - "--connect-to-fortknox"
           - "__CONNECT_TO_FORTKNOX__"
         timeout_in_seconds: __TIMEOUT__

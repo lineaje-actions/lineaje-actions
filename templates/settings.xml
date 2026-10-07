@@ -1,0 +1,36 @@
+<!--
+Rendered by write_fix_config() in lineaje_scan_gh.py into <veecli dir>/lineaje-verify-settings.xml.
+Double-underscore placeholders are substituted at write time.
+
+Contains no raw credentials: the password is a Maven-interpolated ${env.*}
+reference, resolved by Maven itself from the verify hook's environment
+(ARTIFACTORY_MAVEN_TOKEN) — same principle as lineaje-verify.npmrc's
+${ARTIFACTORY_NPM_TOKEN} expansion. Still written chmod 600 and never logged.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.1.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.1.0 http://maven.apache.org/xsd/settings-1.1.0.xsd">
+  <servers>
+    <server>
+      <id>gos-premium-maven</id>
+      <username>__USERNAME__</username>
+      <password>${env.ARTIFACTORY_MAVEN_TOKEN}</password>
+    </server>
+  </servers>
+  <profiles>
+    <profile>
+      <id>gos-premium-maven</id>
+      <repositories>
+        <repository>
+          <id>gos-premium-maven</id>
+          <url>__REGISTRY_URL__</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>gos-premium-maven</activeProfile>
+  </activeProfiles>
+</settings>
