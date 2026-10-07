@@ -292,21 +292,43 @@ runs:
       if: inputs.scan_type == 'source' && inputs.language == 'dotnet' && env.VEECLI_ALREADY_SETUP != 'true'
       shell: bash
       run: |
-        pushd /opt/veecli > /dev/null
-        wget -q https://dot.net/v1/dotnet-install.sh -O dotnet-install.sh
-        chmod +x ./dotnet-install.sh
-        mkdir -p /opt/veecli/third_party/linux/dotnet
-        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 10.0 > /dev/null 2>&1
-        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 9.0 > /dev/null 2>&1
-        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 8.0 > /dev/null 2>&1
-        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 7.0 > /dev/null 2>&1
-        bash ./dotnet-install.sh --install-dir /opt/veecli/third_party/linux/dotnet -c 6.0 > /dev/null 2>&1
-        rm dotnet-install.sh
-        mkdir -p /opt/veecli/third_party/linux/cyclonedx-dotnet
-        /opt/veecli/third_party/linux/dotnet/dotnet tool install \
-          --tool-path /opt/veecli/third_party/linux/cyclonedx-dotnet \
-          --version 5.5.0 CycloneDX
-        popd > /dev/null
+        DOTNET_DIR=/opt/veecli/third_party/linux/dotnet
+        CDX_DIR=/opt/veecli/third_party/linux/cyclonedx-dotnet
+        CDX_VERSION=5.5.0
+
+        # The runtimes cache (step 4) restores third_party/linux, so on a hit
+        # everything below is already on disk — only the env wiring after this
+        # block is still needed. Check every SDK channel and the pinned
+        # CycloneDX version so a partial or stale cache falls through to a
+        # fresh install instead of silently scanning with a missing piece.
+        CACHED=true
+        [ -x "$DOTNET_DIR/dotnet" ] || CACHED=false
+        for ch in 6.0 7.0 8.0 9.0 10.0; do
+          ls -d "$DOTNET_DIR"/sdk/"$ch".* >/dev/null 2>&1 || CACHED=false
+        done
+        [ -x "$CDX_DIR/dotnet-CycloneDX" ] || CACHED=false
+        if [ "$CACHED" = true ]; then
+          "$DOTNET_DIR/dotnet" tool list --tool-path "$CDX_DIR" 2>/dev/null \
+            | grep -qi "cyclonedx.*$CDX_VERSION" || CACHED=false
+        fi
+
+        if [ "$CACHED" = true ]; then
+          echo "[info] .NET SDKs and CycloneDX $CDX_VERSION restored from cache — skipping install"
+        else
+          pushd /opt/veecli > /dev/null
+          wget -q https://dot.net/v1/dotnet-install.sh -O dotnet-install.sh
+          chmod +x ./dotnet-install.sh
+          mkdir -p "$DOTNET_DIR"
+          for ch in 10.0 9.0 8.0 7.0 6.0; do
+            bash ./dotnet-install.sh --install-dir "$DOTNET_DIR" -c "$ch" > /dev/null 2>&1
+          done
+          rm dotnet-install.sh
+          mkdir -p "$CDX_DIR"
+          # --version pinned; reinstall over a stale cached copy if present
+          "$DOTNET_DIR/dotnet" tool uninstall --tool-path "$CDX_DIR" CycloneDX >/dev/null 2>&1 || true
+          "$DOTNET_DIR/dotnet" tool install --tool-path "$CDX_DIR" --version "$CDX_VERSION" CycloneDX
+          popd > /dev/null
+        fi
 
         sudo tee -a /etc/profile.d/lineaje-env.sh >/dev/null <<'EOF'
 
