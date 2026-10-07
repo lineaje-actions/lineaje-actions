@@ -810,6 +810,69 @@ def get_company_id_from_token(token: str) -> str:
         return ""
 
 
+def get_tenant_id_from_token(token: str) -> str:
+    try:
+        part = token.split(".")[1]
+        part += "=" * (4 - len(part) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(part))
+        return payload.get("user_metadata", {}).get("tenant_id", "") or ""
+    except Exception as e:
+        log("warn", f"Could not decode tenant_id from token: {e}")
+        return ""
+
+
+def validate_org_matches_token(auth_service: str, token: str, org_name: str):
+    """Fail the scan unless the token's tenant_id belongs to the org named org_name.
+
+    org_name is what veecli is told to scan under, but the token decides whose
+    tenant the results actually land in — a mismatch (wrong refresh token for
+    the org) would silently upload to the wrong tenant. The org list maps
+    name -> uniqueOrgId, which is the same value as the token's
+    user_metadata.tenant_id. Names are not guaranteed unique, so this passes if
+    ANY org with that name has the token's tenant id. Only runs when org_name
+    is supplied; without it veecli derives the org from the token itself.
+    """
+    tenant_id = get_tenant_id_from_token(token)
+    if not tenant_id:
+        sys.exit("[error] Access token has no user_metadata.tenant_id — cannot verify org_name")
+
+    url = f"{auth_service.rstrip('/')}/lineajeidentity/api/v1/org/list"
+    headers = {"accept": "application/json", "authorization": f"Bearer {token}"}
+    orgs, page = [], 0
+    while True:
+        try:
+            resp = requests.get(
+                url, headers=headers, timeout=30,
+                params={"page": page, "pageable": "false", "size": 2000},
+            )
+        except requests.RequestException as e:
+            sys.exit(f"[error] Failed to reach identity service to verify org_name: {e}")
+        if resp.status_code != 200:
+            sys.exit(f"[error] Org list returned {resp.status_code} while verifying org_name: {resp.text[:200]}")
+        try:
+            data = resp.json()
+        except ValueError:
+            sys.exit("[error] Org list response was not JSON while verifying org_name")
+        orgs.extend(data.get("results") or [])
+        page += 1
+        if page >= int(data.get("total_pages") or 1):
+            break
+
+    wanted = org_name.strip().casefold()
+    named = [o for o in orgs if (o.get("name") or "").strip().casefold() == wanted]
+    if not named:
+        sys.exit(f"[error] org_name '{org_name}' was not found among the organizations this token can see")
+    if any(o.get("uniqueOrgId") == tenant_id for o in named):
+        log("info", f"org_name '{org_name}' matches token tenant_id {tenant_id}")
+        return
+    ids = ", ".join(sorted({o.get("uniqueOrgId", "?") for o in named}))
+    sys.exit(
+        f"[error] org_name '{org_name}' does not match the token's tenant: "
+        f"token tenant_id={tenant_id}, but '{org_name}' is {ids}. "
+        f"Use a refresh token issued for that organization."
+    )
+
+
 # ── veecli config patching ────────────────────────────────────────────────────
 
 def patch_runtimes_config(veecli_path: str, java_major: str):
@@ -2495,6 +2558,12 @@ def main():
         build_config(args.config_orig, args.refresh_token, args.config, host_overrides)
         shutil.copy2(args.config, veecli_dir / "config.json")
         log("info", f"Copied config.json to {veecli_dir}/config.json")
+
+    if args.org_name:
+        _cfg = load_config(args.config)
+        validate_org_matches_token(
+            _cfg.get("LineajeAuthService", ""), get_auth_token(_cfg), args.org_name,
+        )
 
     # ── 2. Run veecli collect ──────────────────────────────────────────────────
     cli_token = args.refresh_token
