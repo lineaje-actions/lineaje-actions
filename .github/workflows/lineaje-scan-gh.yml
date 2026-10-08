@@ -29,7 +29,7 @@ on:
       version_prefix:
         required: false
       org_name:
-        required: false
+        required: true
       lineaje_cli_token:
         required: false
       output_dir:

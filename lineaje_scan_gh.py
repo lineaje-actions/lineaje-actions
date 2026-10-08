@@ -21,7 +21,7 @@ Scan type is selected automatically:
   - Provide --src-folder         → source code scan (Maven / Gradle / Python / Node)
 
 Flow (both modes):
-  1. Exchange refresh token → build config.json
+  1. Build config.json with the refresh token (veecli populates the access token)
   2. Run veecli collect
   3. Parse SBOM job ID from veecli output
   4. Poll SCIM until terminal state (ready for review / failed)
@@ -633,57 +633,6 @@ def setup_go_runtime(version: str):
 
 # ── Auth / config ──────────────────────────────────────────────────────────────
 
-def fetch_access_token(auth_service: str, refresh_token: str) -> str:
-    url = (
-        f"{auth_service.rstrip('/')}"
-        "/lineajeidentity/api/v1/auth/native/renew-access-token"
-    )
-    log("info", f"Exchanging refresh token at {url}")
-    log("debug", f"Refresh token (first 20): {refresh_token[:20]}...")
-
-    try:
-        resp = requests.post(url, params={"refreshToken": refresh_token}, timeout=30)
-    except requests.RequestException as e:
-        sys.exit(f"[error] Failed to reach identity service: {e}")
-
-    log("debug", f"Identity service response: HTTP {resp.status_code}")
-
-    if resp.status_code == 401:
-        sys.exit("[error] Refresh token is invalid or expired (401)")
-    if resp.status_code == 400:
-        sys.exit(f"[error] Bad request to identity service (400): {resp.text[:300]}")
-    if resp.status_code != 200:
-        sys.exit(f"[error] Identity service returned {resp.status_code}: {resp.text[:200]}")
-
-    token = resp.text.strip().strip('"').strip("'")
-    if token.startswith("{"):
-        try:
-            data = json.loads(token)
-            token = (
-                data.get("access_token") or data.get("accessToken") or data.get("token") or ""
-            )
-        except json.JSONDecodeError:
-            pass
-    if not token:
-        sys.exit("[error] Empty access token from identity service")
-
-    log("info", "Access token obtained")
-    return token
-
-
-def _expiry_from_jwt(token: str) -> str:
-    try:
-        part = token.split(".")[1]
-        part += "=" * (4 - len(part) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(part))
-        exp = payload.get("exp", 0)
-        if exp:
-            return datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        pass
-    return ""
-
-
 def build_config(config_orig_path: str, refresh_token: str, output_path: str, host_overrides: dict = None):
     """host_overrides maps config.json host keys (e.g. "SCIMHost") to override
     values. veecli itself reads config.json directly for several of these
@@ -700,21 +649,15 @@ def build_config(config_orig_path: str, refresh_token: str, output_path: str, ho
         if value:
             config_orig[key] = value.rstrip("/")
 
-    auth_service = config_orig.get("LineajeAuthService", "").rstrip("/")
-    if not auth_service:
-        sys.exit("[error] LineajeAuthService not found in config-orig.json (and --auth-service not supplied)")
-
-    access_token = fetch_access_token(auth_service, refresh_token)
-    expiry = _expiry_from_jwt(access_token)
-    if expiry:
-        log("info", f"Token expires at {expiry}")
-
+    # No access token is minted here: veecli only needs the refresh token and
+    # populates AuthClient.AccessToken itself (including via switch-org when
+    # --org-name is given). main() reads it back from config.json after collect.
     config = {
         "AuthClient": {
             "DeviceCode": "DUMMY_DEVICE_CODE",
             "ExpiresIn": 43200,
-            "AccessToken": access_token,
-            "TimeOfExpiration": expiry or "2020-01-01T00:00:00Z",
+            "AccessToken": "",
+            "TimeOfExpiration": "2020-01-01T00:00:00Z",
             "RefreshToken": refresh_token,
             "CompanyID": "DUMMY_COMPANY_ID",
             "OrganizationID": "DUMMY_ORG_ID",
@@ -829,8 +772,8 @@ def validate_org_matches_token(auth_service: str, token: str, org_name: str):
     the org) would silently upload to the wrong tenant. The org list maps
     name -> uniqueOrgId, which is the same value as the token's
     user_metadata.tenant_id. Names are not guaranteed unique, so this passes if
-    ANY org with that name has the token's tenant id. Only runs when org_name
-    is supplied; without it veecli derives the org from the token itself.
+    ANY org with that name has the token's tenant id. Runs after collect, on
+    the token veecli wrote to config.json (post switch-org). org_name is required.
     """
     tenant_id = get_tenant_id_from_token(token)
     if not tenant_id:
@@ -1156,8 +1099,7 @@ def run_veecli_image(
         "--version", version,
         "--fast-scan",
     ]
-    if org_name:
-        cmd.extend(["--org-name", org_name])
+    cmd.extend(["--org-name", org_name])
     if metafiles:
         cmd.extend(["--metafiles", str(Path(metafiles).resolve())])
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
@@ -1217,8 +1159,7 @@ def run_veecli_source(
         "-o", output_dir,
         "--verbose",
     ]
-    if org_name:
-        cmd.extend(["--org-name", org_name])
+    cmd.extend(["--org-name", org_name])
     if fast_scan:
         cmd.append("--fast-scan")
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
@@ -2362,7 +2303,7 @@ def main():
     # scan identity (both modes)
     parser.add_argument("--name",     required=True, help="Lineaje project name")
     parser.add_argument("--version",  required=True, help="Lineaje project version")
-    parser.add_argument("--org-name", default="", help="Lineaje organization name (auto-derived from token if omitted)")
+    parser.add_argument("--org-name", required=True, help="Lineaje organization name (veecli switches to it; token tenant is validated against it)")
 
     # image scan args
     parser.add_argument("--image",             default="", help="Container image reference (activates image scan mode)")
@@ -2545,7 +2486,7 @@ def main():
     # ── 1. Build config.json ───────────────────────────────────────────────────
     veecli_dir = Path(args.veecli).parent
     if args.reuse_config and Path(args.config).exists():
-        log("info", "Reusing existing config.json (token already exchanged this job)")
+        log("info", "Reusing existing config.json (veecli already holds the token from the earlier scan)")
     else:
         host_overrides = {
             "LineajeAuthService": args.auth_service,
@@ -2558,12 +2499,6 @@ def main():
         build_config(args.config_orig, args.refresh_token, args.config, host_overrides)
         shutil.copy2(args.config, veecli_dir / "config.json")
         log("info", f"Copied config.json to {veecli_dir}/config.json")
-
-    if args.org_name:
-        _cfg = load_config(args.config)
-        validate_org_matches_token(
-            _cfg.get("LineajeAuthService", ""), get_auth_token(_cfg), args.org_name,
-        )
 
     # ── 2. Run veecli collect ──────────────────────────────────────────────────
     cli_token = args.refresh_token
@@ -2594,9 +2529,15 @@ def main():
     job_id = parse_job_id(output)
     log("info", f"Job ID: {job_id}")
 
-    # ── 3. Reload config (veecli may have refreshed the token) ─────────────────
+    # ── 3. Reload config (veecli switch-org / refresh rewrites AccessToken) ────
+    # With --org-name, veecli runs switch-org during collect and writes the
+    # org-scoped access token into config.json. Everything downstream (SCIM
+    # polling, vuln summary, fix plan, apply_plan) must use that token, not the
+    # placeholder written into config.json before collect.
     cfg = load_config(args.config)
     token = get_auth_token(cfg)
+    validate_org_matches_token(cfg.get("LineajeAuthService", ""), token, args.org_name)
+    log("info", "Using org-scoped access token from veecli's config.json")
     scim_host = get_scim_host(cfg)
     data_host = get_data_host(cfg, args.data_host)
 

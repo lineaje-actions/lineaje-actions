@@ -36,9 +36,8 @@ inputs:
     required: false
     default: ''
   org_name:
-    description: "Lineaje org name (auto-derived from token if omitted)"
-    required: false
-    default: ''
+    description: "Lineaje org name to scan under (veecli switches to this org; the scan fails if the resulting token's tenant does not match)"
+    required: true
   lineaje_cli_token:
     description: "Lineaje token"
     required: true
@@ -171,6 +170,18 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # ── 0. Validate required inputs ───────────────────────────────────────────
+    # Composite actions do not enforce `required: true`, so check explicitly.
+    - name: Validate org_name
+      shell: bash
+      env:
+        ORG_NAME: ${{ inputs.org_name }}
+      run: |
+        if [ -z "$ORG_NAME" ]; then
+          echo "[error] 'org_name' input is required"
+          exit 1
+        fi
+
     # ── 1. Validate image scan inputs ─────────────────────────────────────────
     - name: Validate image scan inputs
       if: inputs.scan_type == 'image'
@@ -547,9 +558,7 @@ runs:
           --veecli        "$VEECLI_PATH"
           --output-dir    "$OUTPUT_DIR"
         )
-        if [ -n "${{ inputs.org_name }}" ]; then
-          SCAN_ARGS+=(--org-name "${{ inputs.org_name }}")
-        fi
+        SCAN_ARGS+=(--org-name "${{ inputs.org_name }}")
 
         # Service endpoint overrides — only forwarded when set, so an unset input
         # leaves the config-orig.json value untouched. These are baked into

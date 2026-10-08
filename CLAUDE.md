@@ -48,8 +48,8 @@ Plus assets it copies or renders at runtime, used only by `post_scan=fix_plan_go
 
 ```
 0. Install language runtime (Java/Python/Node — source scans only)
-1. Exchange refresh token → access token (Lineaje identity service)
-2. Build config.json (from veecli's config-orig.json template + access token)
+1. Build config.json (from veecli's config-orig.json template + refresh token only; no access-token exchange)
+2. (veecli populates `AccessToken` itself, including via switch-org when `org_name` is passed)
 3. Run veecli collect (image or source mode)
 4. Parse SBOM job ID from veecli stdout (regex on "SBOM ID - <id>")
 5. Poll SCIM API until terminal state ("ready for review" or "failed")
@@ -72,7 +72,7 @@ Mode is determined by which CLI flag is provided to `lineaje_scan_gh.py`:
 
 ### Multi-scan jobs (scanning original + patched image)
 
-When the action runs more than once in a single job (e.g., scan → patch → rescan pattern), `action.yml` detects `/opt/veecli/veecli` already exists and sets `VEECLI_ALREADY_SETUP=true`, skipping re-download, re-setup, and pip install. The second invocation reuses the existing `config.json` (token already exchanged). The auto-generated `PROJECT_VERSION` appends `-patched` in this case.
+When the action runs more than once in a single job (e.g., scan → patch → rescan pattern), `action.yml` detects `/opt/veecli/veecli` already exists and sets `VEECLI_ALREADY_SETUP=true`, skipping re-download, re-setup, and pip install. The second invocation reuses the existing `config.json` (veecli already holds the token). The auto-generated `PROJECT_VERSION` appends `-patched` in this case.
 
 ### Runtime installation
 
