@@ -668,8 +668,6 @@ def fetch_access_token(auth_service: str, refresh_token: str) -> str:
         sys.exit("[error] Empty access token from identity service")
 
     log("info", "Access token obtained")
-    # TEMPORARY debug output — prints the full exchanged token. Remove before release.
-    log("debug", f"Exchanged access token: {token}")
     return token
 
 
@@ -2599,27 +2597,12 @@ def main():
     # exchanged token seeded into config.json before collect.
     # veecli runs from (and writes to) its own directory's config.json, not
     # necessarily the copy at args.config. Read whichever copy was modified most
-    # recently, and log both so a wrong-path problem is visible.
+    # recently (the chosen path is logged below).
     candidates = [p for p in (veecli_dir / "config.json", Path(args.config)) if p.exists()]
-    for c in candidates:
-        log("debug", f"config candidate {c}: mtime={c.stat().st_mtime:.0f} "
-                     f"token_tail=...{(json.loads(c.read_text()).get('AuthClient', {}).get('AccessToken') or '')[-12:]}")
     config_path = max(candidates, key=lambda c: c.stat().st_mtime)
     log("info", f"Reading post-collect config from {config_path}")
     cfg = load_config(str(config_path))
     token = get_auth_token(cfg)
-    # TEMPORARY debug output. GitHub masks any log text equal to a secret, so
-    # rather than print the token, say how it relates to the others and show its
-    # (non-secret) claims. Remove before release.
-    try:
-        _claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=" * (-len(token.split(".")[1]) % 4)))
-        _meta = _claims.get("user_metadata", {})
-        _claims_view = {"tenant_id": _meta.get("tenant_id"), "company_id": _meta.get("company_id"),
-                        "exp": _claims.get("exp"), "iat": _claims.get("iat")}
-    except Exception as e:
-        _claims_view = f"not a decodable JWT ({e})"
-    log("debug", f"Post-collect token: equals_refresh_token={token == args.refresh_token}, "
-                 f"is_jwt={token.count('.') == 2}, len={len(token)}, claims={_claims_view}")
     validate_org_matches_token(cfg.get("LineajeAuthService", ""), token, args.org_name)
     log("info", "Using org-scoped access token from veecli's config.json")
     scim_host = get_scim_host(cfg)
