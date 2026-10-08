@@ -21,7 +21,7 @@ Scan type is selected automatically:
   - Provide --src-folder         → source code scan (Maven / Gradle / Python / Node)
 
 Flow (both modes):
-  1. Build config.json with the refresh token (veecli populates the access token)
+  1. Exchange refresh token → build config.json
   2. Run veecli collect
   3. Parse SBOM job ID from veecli output
   4. Poll SCIM until terminal state (ready for review / failed)
@@ -633,6 +633,59 @@ def setup_go_runtime(version: str):
 
 # ── Auth / config ──────────────────────────────────────────────────────────────
 
+def fetch_access_token(auth_service: str, refresh_token: str) -> str:
+    url = (
+        f"{auth_service.rstrip('/')}"
+        "/lineajeidentity/api/v1/auth/native/renew-access-token"
+    )
+    log("info", f"Exchanging refresh token at {url}")
+    log("debug", f"Refresh token (first 20): {refresh_token[:20]}...")
+
+    try:
+        resp = requests.post(url, params={"refreshToken": refresh_token}, timeout=30)
+    except requests.RequestException as e:
+        sys.exit(f"[error] Failed to reach identity service: {e}")
+
+    log("debug", f"Identity service response: HTTP {resp.status_code}")
+
+    if resp.status_code == 401:
+        sys.exit("[error] Refresh token is invalid or expired (401)")
+    if resp.status_code == 400:
+        sys.exit(f"[error] Bad request to identity service (400): {resp.text[:300]}")
+    if resp.status_code != 200:
+        sys.exit(f"[error] Identity service returned {resp.status_code}: {resp.text[:200]}")
+
+    token = resp.text.strip().strip('"').strip("'")
+    if token.startswith("{"):
+        try:
+            data = json.loads(token)
+            token = (
+                data.get("access_token") or data.get("accessToken") or data.get("token") or ""
+            )
+        except json.JSONDecodeError:
+            pass
+    if not token:
+        sys.exit("[error] Empty access token from identity service")
+
+    log("info", "Access token obtained")
+    # TEMPORARY debug output — prints the full exchanged token. Remove before release.
+    log("debug", f"Exchanged access token: {token}")
+    return token
+
+
+def _expiry_from_jwt(token: str) -> str:
+    try:
+        part = token.split(".")[1]
+        part += "=" * (4 - len(part) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(part))
+        exp = payload.get("exp", 0)
+        if exp:
+            return datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    return ""
+
+
 def build_config(config_orig_path: str, refresh_token: str, output_path: str, host_overrides: dict = None):
     """host_overrides maps config.json host keys (e.g. "SCIMHost") to override
     values. veecli itself reads config.json directly for several of these
@@ -649,15 +702,25 @@ def build_config(config_orig_path: str, refresh_token: str, output_path: str, ho
         if value:
             config_orig[key] = value.rstrip("/")
 
-    # No access token is minted here: veecli only needs the refresh token and
-    # populates AuthClient.AccessToken itself (including via switch-org when
-    # --org-name is given). main() reads it back from config.json after collect.
+    # veecli does not mint a token from the refresh token alone: with an empty
+    # AccessToken / expired TimeOfExpiration it falls into a device-code flow and
+    # fails. So seed config.json with a valid exchanged token; veecli's switch-org
+    # during collect then overwrites it, and main() reads the result back.
+    auth_service = config_orig.get("LineajeAuthService", "").rstrip("/")
+    if not auth_service:
+        sys.exit("[error] LineajeAuthService not found in config-orig.json (and --auth-service not supplied)")
+
+    access_token = fetch_access_token(auth_service, refresh_token)
+    expiry = _expiry_from_jwt(access_token)
+    if expiry:
+        log("info", f"Token expires at {expiry}")
+
     config = {
         "AuthClient": {
             "DeviceCode": "DUMMY_DEVICE_CODE",
             "ExpiresIn": 43200,
-            "AccessToken": "",
-            "TimeOfExpiration": "2020-01-01T00:00:00Z",
+            "AccessToken": access_token,
+            "TimeOfExpiration": expiry or "2020-01-01T00:00:00Z",
             "RefreshToken": refresh_token,
             "CompanyID": "DUMMY_COMPANY_ID",
             "OrganizationID": "DUMMY_ORG_ID",
@@ -2486,7 +2549,7 @@ def main():
     # ── 1. Build config.json ───────────────────────────────────────────────────
     veecli_dir = Path(args.veecli).parent
     if args.reuse_config and Path(args.config).exists():
-        log("info", "Reusing existing config.json (veecli already holds the token from the earlier scan)")
+        log("info", "Reusing existing config.json (token already exchanged this job)")
     else:
         host_overrides = {
             "LineajeAuthService": args.auth_service,
@@ -2533,9 +2596,11 @@ def main():
     # With --org-name, veecli runs switch-org during collect and writes the
     # org-scoped access token into config.json. Everything downstream (SCIM
     # polling, vuln summary, fix plan, apply_plan) must use that token, not the
-    # placeholder written into config.json before collect.
+    # exchanged token seeded into config.json before collect.
     cfg = load_config(args.config)
     token = get_auth_token(cfg)
+    # TEMPORARY debug output — prints the full post-collect token. Remove before release.
+    log("debug", f"Post-collect access token from config.json: {token}")
     validate_org_matches_token(cfg.get("LineajeAuthService", ""), token, args.org_name)
     log("info", "Using org-scoped access token from veecli's config.json")
     scim_host = get_scim_host(cfg)
