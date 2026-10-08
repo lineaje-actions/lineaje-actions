@@ -2608,8 +2608,18 @@ def main():
     log("info", f"Reading post-collect config from {config_path}")
     cfg = load_config(str(config_path))
     token = get_auth_token(cfg)
-    # TEMPORARY debug output — prints the full post-collect token. Remove before release.
-    log("debug", f"Post-collect access token from config.json: {token}")
+    # TEMPORARY debug output. GitHub masks any log text equal to a secret, so
+    # rather than print the token, say how it relates to the others and show its
+    # (non-secret) claims. Remove before release.
+    try:
+        _claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=" * (-len(token.split(".")[1]) % 4)))
+        _meta = _claims.get("user_metadata", {})
+        _claims_view = {"tenant_id": _meta.get("tenant_id"), "company_id": _meta.get("company_id"),
+                        "exp": _claims.get("exp"), "iat": _claims.get("iat")}
+    except Exception as e:
+        _claims_view = f"not a decodable JWT ({e})"
+    log("debug", f"Post-collect token: equals_refresh_token={token == args.refresh_token}, "
+                 f"is_jwt={token.count('.') == 2}, len={len(token)}, claims={_claims_view}")
     validate_org_matches_token(cfg.get("LineajeAuthService", ""), token, args.org_name)
     log("info", "Using org-scoped access token from veecli's config.json")
     scim_host = get_scim_host(cfg)
