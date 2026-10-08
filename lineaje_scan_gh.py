@@ -700,6 +700,10 @@ def build_config(config_orig_path: str, refresh_token: str, output_path: str, ho
         if value:
             config_orig[key] = value.rstrip("/")
 
+    # veecli does not mint a token from the refresh token alone: with an empty
+    # AccessToken / expired TimeOfExpiration it falls into a device-code flow and
+    # fails. So seed config.json with a valid exchanged token; veecli's switch-org
+    # during collect then overwrites it, and main() reads the result back.
     auth_service = config_orig.get("LineajeAuthService", "").rstrip("/")
     if not auth_service:
         sys.exit("[error] LineajeAuthService not found in config-orig.json (and --auth-service not supplied)")
@@ -808,6 +812,69 @@ def get_company_id_from_token(token: str) -> str:
     except Exception as e:
         log("warn", f"Could not decode company_id from token: {e}")
         return ""
+
+
+def get_tenant_id_from_token(token: str) -> str:
+    try:
+        part = token.split(".")[1]
+        part += "=" * (4 - len(part) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(part))
+        return payload.get("user_metadata", {}).get("tenant_id", "") or ""
+    except Exception as e:
+        log("warn", f"Could not decode tenant_id from token: {e}")
+        return ""
+
+
+def validate_org_matches_token(auth_service: str, token: str, org_name: str):
+    """Fail the scan unless the token's tenant_id belongs to the org named org_name.
+
+    org_name is what veecli is told to scan under, but the token decides whose
+    tenant the results actually land in — a mismatch (wrong refresh token for
+    the org) would silently upload to the wrong tenant. The org list maps
+    name -> uniqueOrgId, which is the same value as the token's
+    user_metadata.tenant_id. Names are not guaranteed unique, so this passes if
+    ANY org with that name has the token's tenant id. Runs after collect, on
+    the token veecli wrote to config.json (post switch-org). org_name is required.
+    """
+    tenant_id = get_tenant_id_from_token(token)
+    if not tenant_id:
+        sys.exit("[error] Access token has no user_metadata.tenant_id — cannot verify org_name")
+
+    url = f"{auth_service.rstrip('/')}/lineajeidentity/api/v1/org/list"
+    headers = {"accept": "application/json", "authorization": f"Bearer {token}"}
+    orgs, page = [], 0
+    while True:
+        try:
+            resp = requests.get(
+                url, headers=headers, timeout=30,
+                params={"page": page, "pageable": "false", "size": 2000},
+            )
+        except requests.RequestException as e:
+            sys.exit(f"[error] Failed to reach identity service to verify org_name: {e}")
+        if resp.status_code != 200:
+            sys.exit(f"[error] Org list returned {resp.status_code} while verifying org_name: {resp.text[:200]}")
+        try:
+            data = resp.json()
+        except ValueError:
+            sys.exit("[error] Org list response was not JSON while verifying org_name")
+        orgs.extend(data.get("results") or [])
+        page += 1
+        if page >= int(data.get("total_pages") or 1):
+            break
+
+    wanted = org_name.strip().casefold()
+    named = [o for o in orgs if (o.get("name") or "").strip().casefold() == wanted]
+    if not named:
+        sys.exit(f"[error] org_name '{org_name}' was not found among the organizations this token can see")
+    if any(o.get("uniqueOrgId") == tenant_id for o in named):
+        log("info", f"org_name '{org_name}' matches token tenant_id {tenant_id}")
+        return
+    ids = ", ".join(sorted({o.get("uniqueOrgId", "?") for o in named}))
+    sys.exit(
+        f"[error] org_name '{org_name}' does not match the token's tenant: "
+        f"token tenant_id={tenant_id}, but '{org_name}' is {ids}. "
+        f"Use a refresh token issued for that organization."
+    )
 
 
 # ── veecli config patching ────────────────────────────────────────────────────
@@ -1093,8 +1160,7 @@ def run_veecli_image(
         "--version", version,
         "--fast-scan",
     ]
-    if org_name:
-        cmd.extend(["--org-name", org_name])
+    cmd.extend(["--org-name", org_name])
     if metafiles:
         cmd.extend(["--metafiles", str(Path(metafiles).resolve())])
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
@@ -1154,8 +1220,7 @@ def run_veecli_source(
         "-o", output_dir,
         "--verbose",
     ]
-    if org_name:
-        cmd.extend(["--org-name", org_name])
+    cmd.extend(["--org-name", org_name])
     if fast_scan:
         cmd.append("--fast-scan")
     return _run_veecli(cmd, str(Path(veecli).parent), token, gos_mode)
@@ -2299,7 +2364,7 @@ def main():
     # scan identity (both modes)
     parser.add_argument("--name",     required=True, help="Lineaje project name")
     parser.add_argument("--version",  required=True, help="Lineaje project version")
-    parser.add_argument("--org-name", default="", help="Lineaje organization name (auto-derived from token if omitted)")
+    parser.add_argument("--org-name", required=True, help="Lineaje organization name (veecli switches to it; token tenant is validated against it)")
 
     # image scan args
     parser.add_argument("--image",             default="", help="Container image reference (activates image scan mode)")
@@ -2525,9 +2590,21 @@ def main():
     job_id = parse_job_id(output)
     log("info", f"Job ID: {job_id}")
 
-    # ── 3. Reload config (veecli may have refreshed the token) ─────────────────
-    cfg = load_config(args.config)
+    # ── 3. Reload config (veecli switch-org / refresh rewrites AccessToken) ────
+    # With --org-name, veecli runs switch-org during collect and writes the
+    # org-scoped access token into config.json. Everything downstream (SCIM
+    # polling, vuln summary, fix plan, apply_plan) must use that token, not the
+    # exchanged token seeded into config.json before collect.
+    # veecli runs from (and writes to) its own directory's config.json, not
+    # necessarily the copy at args.config. Read whichever copy was modified most
+    # recently (the chosen path is logged below).
+    candidates = [p for p in (veecli_dir / "config.json", Path(args.config)) if p.exists()]
+    config_path = max(candidates, key=lambda c: c.stat().st_mtime)
+    log("info", f"Reading post-collect config from {config_path}")
+    cfg = load_config(str(config_path))
     token = get_auth_token(cfg)
+    validate_org_matches_token(cfg.get("LineajeAuthService", ""), token, args.org_name)
+    log("info", "Using org-scoped access token from veecli's config.json")
     scim_host = get_scim_host(cfg)
     data_host = get_data_host(cfg, args.data_host)
 

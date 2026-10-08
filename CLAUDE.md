@@ -48,8 +48,8 @@ Plus assets it copies or renders at runtime, used only by `post_scan=fix_plan_go
 
 ```
 0. Install language runtime (Java/Python/Node — source scans only)
-1. Exchange refresh token → access token (Lineaje identity service)
-2. Build config.json (from veecli's config-orig.json template + access token)
+1. Exchange refresh token → access token (identity service). veecli needs a valid token + expiry in config.json, else it falls into a device-code flow and fails
+2. Build config.json (from veecli's config-orig.json template + access token); `veecli collect --org-name` then does switch-org and overwrites `AccessToken`, which the script reads back after collect
 3. Run veecli collect (image or source mode)
 4. Parse SBOM job ID from veecli stdout (regex on "SBOM ID - <id>")
 5. Poll SCIM API until terminal state ("ready for review" or "failed")
