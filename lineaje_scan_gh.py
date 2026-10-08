@@ -2597,7 +2597,16 @@ def main():
     # org-scoped access token into config.json. Everything downstream (SCIM
     # polling, vuln summary, fix plan, apply_plan) must use that token, not the
     # exchanged token seeded into config.json before collect.
-    cfg = load_config(args.config)
+    # veecli runs from (and writes to) its own directory's config.json, not
+    # necessarily the copy at args.config. Read whichever copy was modified most
+    # recently, and log both so a wrong-path problem is visible.
+    candidates = [p for p in (veecli_dir / "config.json", Path(args.config)) if p.exists()]
+    for c in candidates:
+        log("debug", f"config candidate {c}: mtime={c.stat().st_mtime:.0f} "
+                     f"token_tail=...{(json.loads(c.read_text()).get('AuthClient', {}).get('AccessToken') or '')[-12:]}")
+    config_path = max(candidates, key=lambda c: c.stat().st_mtime)
+    log("info", f"Reading post-collect config from {config_path}")
+    cfg = load_config(str(config_path))
     token = get_auth_token(cfg)
     # TEMPORARY debug output — prints the full post-collect token. Remove before release.
     log("debug", f"Post-collect access token from config.json: {token}")
