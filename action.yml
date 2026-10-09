@@ -84,29 +84,13 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java and Go source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests) | apply_plan (same languages as fix_plan, source scans only; opens a remediation pull request)"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java and Go source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests)"
     required: false
     default: "scan_only"
   connect_to_fortknox:
     description: "[fix_plan_gos_compat only] When false, the compat check only ever suggests publicly available package versions — Lineaje-rebuilt (premium) packages are excluded. Default true."
     required: false
     default: "true"
-  github_token:
-    description: "[apply_plan] Token used to push the remediation branch and open the PR. Needs contents:write and pull-requests:write — see the permissions block in the README. Defaults to the job's own GITHUB_TOKEN."
-    required: false
-    default: ${{ github.token }}
-  include_premium:
-    description: "[apply_plan] Include premium fixes in the PR (true | false). Premium fixes resolve from Lineaje's premium registry, so a PR containing one will not build for a consumer without those credentials — excluded by default."
-    required: false
-    default: "false"
-  pr_reviewers:
-    description: "[apply_plan] Space- or comma-separated GitHub logins to request review from. Fails silently if a login is invalid."
-    required: false
-    default: ''
-  fix_timeout:
-    description: "[apply_plan] Seconds to wait for veecli to open the pull request before failing"
-    required: false
-    default: "900"
 
   # ── Service endpoint overrides ──────────────────────────────────────────────-
   identity_url:
@@ -160,12 +144,6 @@ outputs:
   premium_only:
     description: "True when a fix plan was produced and every available fix is premium type (no curated fixes). False otherwise."
     value: ${{ steps.lineaje_scan.outputs.premium_only }}
-  pr_created:
-    description: "Whether a remediation pull request was opened (true/false). Only ever true for post_scan=apply_plan on a source scan."
-    value: ${{ steps.lineaje_scan.outputs.pr_created }}
-  pr_url:
-    description: "URL of the remediation pull request (post_scan=apply_plan). Empty string when no PR was opened."
-    value: ${{ steps.lineaje_scan.outputs.pr_url }}
 
 runs:
   using: "composite"
@@ -207,12 +185,6 @@ runs:
           fi
         fi
 
-        if [ "${{ inputs.post_scan }}" = "apply_plan" ]; then
-          echo "[warn] apply_plan is not yet supported for image scans — the fix plan and"
-          echo "[warn] patched Dockerfile artifact are still produced, but no pull request"
-          echo "[warn] is opened. Use scan_type: source to open a remediation PR."
-        fi
-
         # Set here too (not just in step 1b) so downstream steps never need a
         # ${POST_SCAN_EFFECTIVE:-...} fallback — image scans have no per-language
         # downgrade, so this is always the input value verbatim.
@@ -240,17 +212,7 @@ runs:
           exit 1
         fi
 
-        # apply_plan supports every language fix_plan does except Go — that is
-        # still enforced, just by lineaje_scan_gh.py's own --apply-plan+golang
-        # check rather than a downgrade here.
-        EFFECTIVE="${{ inputs.post_scan }}"
-        echo "POST_SCAN_EFFECTIVE=$EFFECTIVE" >> "$GITHUB_ENV"
-
-        if [ "$EFFECTIVE" = "apply_plan" ] && [ -z "${{ inputs.github_token }}" ]; then
-          echo "[error] post_scan=apply_plan needs a 'github_token' that can push branches and open PRs."
-          echo "[error] It defaults to the job's own GITHUB_TOKEN — if you cleared it, pass a PAT instead."
-          exit 1
-        fi
+        echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
 
     # ── 2. Download and extract veecli ────────────────────────────────────────
     - name: Download and extract veecli
@@ -526,9 +488,6 @@ runs:
       env:
         REFRESH_TOKEN: ${{ inputs.lineaje_cli_token }}
         PIP_EXTRA_INDEX_URL: ${{ inputs.pip_extra_index_url }}
-        # Passed via env, not argv: the script logs its full command line and
-        # /proc/<pid>/cmdline is world-readable, so a token never belongs there.
-        LINEAJE_PR_TOKEN: ${{ inputs.github_token }}
       run: |
         if [ -z "$REFRESH_TOKEN" ]; then
           echo "[error] lineaje_cli_token input is required"
@@ -540,12 +499,6 @@ runs:
         if [ -z "$POST_SCAN_EFFECTIVE" ]; then
           echo "[error] invalid scan_type: '${{ inputs.scan_type }}' (expected image | source)"
           exit 1
-        fi
-
-        if [ "$VEECLI_ALREADY_SETUP" = "true" ] && [ "$POST_SCAN_EFFECTIVE" = "apply_plan" ]; then
-          echo "[warn] veecli was already set up by an earlier call in this job and post_scan"
-          echo "[warn] is apply_plan — each invocation creates its own fix tasks, so a"
-          echo "[warn] scan → patch → rescan job will open more than one pull request."
         fi
 
         source "${{ github.action_path }}/.venv/bin/activate"
@@ -598,14 +551,6 @@ runs:
           SCAN_ARGS+=(--gos-fix-plan --output-fix-dir "$OUTPUT_FIX_DIR")
           if [ "${{ inputs.connect_to_fortknox }}" = "false" ]; then
             SCAN_ARGS+=(--no-connect-to-fortknox)
-          fi
-        elif [ "$EFFECTIVE" = "apply_plan" ]; then
-          SCAN_ARGS+=(--apply-plan --fix-timeout "${{ inputs.fix_timeout }}")
-          if [ "${{ inputs.include_premium }}" = "true" ]; then
-            SCAN_ARGS+=(--include-premium)
-          fi
-          if [ -n "${{ inputs.pr_reviewers }}" ]; then
-            SCAN_ARGS+=(--pr-reviewers "${{ inputs.pr_reviewers }}")
           fi
         fi
 
@@ -666,14 +611,6 @@ runs:
         echo "sbom_id=${SBOM_ID}" >> "$GITHUB_OUTPUT"
         echo "ech_count=${ECH_COUNT}" >> "$GITHUB_OUTPUT"
         echo "premium_only=${PREMIUM_ONLY}" >> "$GITHUB_OUTPUT"
-
-        # pr_created / pr_url are written by lineaje_scan_gh.py itself (via
-        # _set_output) whenever --apply-plan ran, image stub included — default
-        # them here only otherwise, so the key is never written twice.
-        if [ "$EFFECTIVE" != "apply_plan" ]; then
-          echo "pr_created=false" >> "$GITHUB_OUTPUT"
-          echo "pr_url=" >> "$GITHUB_OUTPUT"
-        fi
 
         [ "$SCAN_EXIT" -eq 0 ] || exit "$SCAN_EXIT"
 
@@ -762,11 +699,8 @@ runs:
         if-no-files-found: ignore
 
     # ── 14. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
-    # apply_plan runs the same fetch-and-download step fix_plan does before it
-    # additionally opens a PR, so it produces the same manifest files here — kept
-    # as a fallback even when the PR itself succeeds.
     - name: Upload fix plan artifacts
-      if: inputs.scan_type == 'source' && (steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'apply_plan') && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
+      if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: lineaje-fix-plan
@@ -781,9 +715,9 @@ runs:
           ${{ inputs.output_dir }}/package-lock.json
         if-no-files-found: ignore
 
-    # ── 15. Upload raw fix plan response (fix_plan, fix_plan_gos_compat, apply_plan)
+    # ── 15. Upload raw fix plan response (fix_plan, fix_plan_gos_compat)
     - name: Upload raw fix plan
-      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat' || steps.lineaje_scan.outputs.post_scan_effective == 'apply_plan'
+      if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat'
       uses: actions/upload-artifact@v4
       with:
         name: lineaje-raw-fix-plan
