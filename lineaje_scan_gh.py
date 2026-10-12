@@ -99,8 +99,8 @@ MAVEN_URL = f"https://archive.apache.org/dist/maven/maven-3/{MAVEN_VERSION}/bina
 MAVEN_DIR = f"maven-{MAVEN_VERSION}"
 
 GRADLE_VERSIONS = [
-    "8.9", "8.6", "8.4", "8.2", "8.1.1", "8.0.2",
-    "7.6.1", "7.5.1", "7.4.2",
+    "9.2.1", "8.14.4", "8.9", "8.6", "8.4", "8.2", "8.1.1", "8.0.2",
+    "7.6.6", "7.5.1", "7.4.2",
     "6.9.1", "6.3",
     "5.6.4", "5.5.1",
     "4.9",
@@ -298,6 +298,16 @@ def setup_java_runtime(java_version: str):
             else:
                 log("warn", f"gradle binary not found after extracting {filename}")
             archive.unlink(missing_ok=True)
+
+    # Expose the requested JDK to veecli's Maven/Gradle subprocesses (and ./mvnw)
+    java_home = next((THIRD_PARTY / d for d, _, _ in jdk_releases
+                      if (THIRD_PARTY / d / "bin" / "java").exists()), None)
+    if java_home:
+        os.environ["JAVA_HOME"] = str(java_home)
+        os.environ["PATH"] = str(java_home / "bin") + os.pathsep + os.environ.get("PATH", "")
+        log("info", f"JAVA_HOME={java_home}")
+    else:
+        log("warn", f"No installed JDK found for Java {java_version} — JAVA_HOME not set")
 
     log("info", "Java runtime setup complete")
 
