@@ -1449,9 +1449,9 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
     """
     metadata = {"components": plan_details}
     log("info", f"Applying fix plan for {len(plan_details)} component(s) at {gpt_host}/api/v1/explain "
-                f"(query: {query!r})")
+                f"(query: {APPLY_FIX_QUERY!r})")
 
-    data = _post_explain(gpt_host, token, sbom_id, query, metadata=metadata)
+    data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY, metadata=metadata)
     _raise_on_explain_error(data, "Apply fix plan")
     guid = data.get("guid")
     log("info", f"Apply fix plan submitted — guid: {guid}, message: {data.get('message', '')!r}")
@@ -1479,7 +1479,7 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
         time.sleep(poll_interval)
         log("info", f"Apply fix plan poll {attempt + 1}/{max_attempts} (guid: {guid})...")
         try:
-            data = _post_explain(gpt_host, token, sbom_id, query,
+            data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY,
                                  guid=guid, metadata=metadata)
         except requests.RequestException as e:
             log("warn", f"Apply fix plan poll {attempt + 1}: {e}")
