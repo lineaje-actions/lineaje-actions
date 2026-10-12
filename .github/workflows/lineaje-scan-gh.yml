@@ -29,7 +29,7 @@ on:
       version_prefix:
         required: false
       org_name:
-        required: false
+        required: true
       lineaje_cli_token:
         required: false
       output_dir:
@@ -62,20 +62,7 @@ on:
         required: false
         default: "scan_only"
         type: choice
-        options: [scan_only, fix_plan, fix_plan_gos_compat, apply_plan]
-      include_premium:
-        description: "[apply_plan] Include premium fixes in the PR"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
-      pr_reviewers:
-        description: "[apply_plan] Space- or comma-separated GitHub logins to request review from"
-        required: false
-      fix_timeout:
-        description: "[apply_plan] Seconds to wait for the PR to be created before failing"
-        required: false
-        default: "900"
+        options: [scan_only, fix_plan, fix_plan_gos_compat]
       fast_scan:
         required: false
         default: "true"
@@ -90,10 +77,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    # post_scan=apply_plan pushes a branch and opens a PR with GITHUB_TOKEN.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,8 +111,5 @@ jobs:
           data_service_url:           ${{ vars.LINEAJE_DATA_SERVICE_URL }}
           gpt_service_url:            ${{ vars.LINEAJE_GPT_SERVICE_URL }}
           post_scan:                  ${{ inputs.post_scan }}
-          include_premium:            ${{ inputs.include_premium }}
-          pr_reviewers:               ${{ inputs.pr_reviewers }}
-          fix_timeout:                ${{ inputs.fix_timeout }}
           fast_scan:                  ${{ inputs.fast_scan }}
           gos_mode:                   ${{ inputs.gos_mode }}
