@@ -1093,10 +1093,13 @@ def _gos_premium_env(token: str, gos_mode: str) -> dict:
         "GOS_PREMIUM_REGISTRY_TOKEN": token,
         "ARTIFACTORY_NPM_TOKEN": token,
         "ARTIFACTORY_MAVEN_TOKEN": token,
+        "ARTIFACTORY_NUGET_TOKEN": token,
         "GOS_PREMIUM_NPM_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/api/npm/gos-all-proxy-npm",
         # Unlike npm's /api/npm/ wrapper (npm-specific Artifactory behaviour), a
         # Maven-layout repo is served directly at /artifactory/<repo-key>/.
         "GOS_PREMIUM_MAVEN_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/gos-all-proxy-maven",
+        # NuGet V3 feed index for the Artifactory repo gos-all-proxy-nuget.
+        "GOS_PREMIUM_NUGET_REGISTRY": f"https://{gos_mode}.fortknox.v2.prod.veedna.com/artifactory/api/nuget/v3/gos-all-proxy-nuget/index.json",
         "GOS_PREMIUM_REGISTRY_USERNAME": "lineaje_customer@lineaje.com",
     }
 
@@ -1443,9 +1446,9 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
     """
     metadata = {"components": plan_details}
     log("info", f"Applying fix plan for {len(plan_details)} component(s) at {gpt_host}/api/v1/explain "
-                f"(query: {query!r})")
+                f"(query: {APPLY_FIX_QUERY!r})")
 
-    data = _post_explain(gpt_host, token, sbom_id, query, metadata=metadata)
+    data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY, metadata=metadata)
     _raise_on_explain_error(data, "Apply fix plan")
     guid = data.get("guid")
     log("info", f"Apply fix plan submitted — guid: {guid}, message: {data.get('message', '')!r}")
@@ -1473,7 +1476,7 @@ def apply_fix_left_plan(gpt_host: str, token: str, sbom_id: str, plan_details: l
         time.sleep(poll_interval)
         log("info", f"Apply fix plan poll {attempt + 1}/{max_attempts} (guid: {guid})...")
         try:
-            data = _post_explain(gpt_host, token, sbom_id, query,
+            data = _post_explain(gpt_host, token, sbom_id, APPLY_FIX_QUERY,
                                  guid=guid, metadata=metadata)
         except requests.RequestException as e:
             log("warn", f"Apply fix plan poll {attempt + 1}: {e}")
@@ -1661,6 +1664,7 @@ VERIFY_SCRIPT_NAME      = "lineaje-verify.sh"
 VERIFY_NPMRC_NAME       = "lineaje-verify.npmrc"
 VERIFY_PIP_CONF_NAME    = "lineaje-verify-pip.conf"
 VERIFY_SETTINGS_XML_NAME = "lineaje-verify-settings.xml"
+VERIFY_NUGET_CONFIG_NAME = "lineaje-verify.nuget.config"
 
 ACTION_DIR    = Path(__file__).resolve().parent
 TEMPLATES_DIR = ACTION_DIR / "templates"
@@ -1720,6 +1724,21 @@ def _maven_settings_content(token: str, gos_mode: str) -> str:
     )
 
 
+def _nuget_config_content(token: str, gos_mode: str) -> str:
+    """NuGet.Config with nuget.org plus the GOS premium NuGet feed.
+
+    The password is a NuGet %ENV_VAR% reference, not the raw token — resolved by
+    NuGet itself from the verification hook's environment, same principle as the
+    npmrc and settings.xml.
+    """
+    gos = _gos_premium_env(token, gos_mode)
+    return _render_template(
+        "nuget.config",
+        FEED_URL=gos["GOS_PREMIUM_NUGET_REGISTRY"],
+        USERNAME=gos["GOS_PREMIUM_REGISTRY_USERNAME"],
+    )
+
+
 def _normalize_pip_index_urls(value: str) -> str:
     """Percent-encode credentials while preserving each index URL's host and path."""
     normalized = []
@@ -1746,6 +1765,12 @@ def _maven_bin_dir() -> str:
     """Maven is a single pinned version (MAVEN_VERSION), unlike per-version Node/Python —
     no language_version lookup needed."""
     return str(THIRD_PARTY / MAVEN_DIR / "bin")
+
+
+def _dotnet_bin_dir() -> str:
+    """The .NET SDK is installed by action.yml (not Python) into a single
+    third_party/linux/dotnet dir, with the channel resolved by dotnet-install."""
+    return str(THIRD_PARTY / "dotnet")
 
 
 def _go_bin_dir(version: str) -> str:
@@ -1777,14 +1802,14 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
     or on Go — there is no GOS/Fortknox Go module proxy yet, so the go case
     always uses the public Go proxy regardless of this flag.
 
-    repo_root (java and golang only): the original full checkout, passed to the
-    hook as --repo-root. veecli's --task-dir contains only the specific file(s)
-    a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
-    just go.mod out of a module with a local `replace` directive), not the
-    whole project — a Maven multi-module build needs the parent POM and sibling
-    modules, and a Go module's relative `replace` target needs its own tree, so
-    the hook reconstructs the full tree from repo_root and overlays the patched
-    file(s) from --task-dir on top of it.
+    repo_root (java, golang and dotnet only): the original full checkout, passed
+    to the hook as --repo-root. veecli's --task-dir contains only the specific
+    file(s) a patch task touches (e.g. just core/pom.xml out of a core+app
+    reactor, just go.mod out of a module with a local `replace` directive, or
+    just one .csproj out of a solution with ProjectReferences and a shared
+    Directory.Packages.props), not the whole project, so the hook reconstructs
+    the full tree from repo_root and overlays the patched file(s) from
+    --task-dir on top of it.
     """
     veecli_dir = Path(veecli_path).parent
 
@@ -1822,6 +1847,18 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         log("warn", "No CLI token available — skipping maven settings.xml; "
                     "mvn in the verify hook will not resolve lineaje-rebuilt versions")
 
+    nuget_config = veecli_dir / VERIFY_NUGET_CONFIG_NAME
+    if connect_to_fortknox and token:
+        nuget_config.write_text(_nuget_config_content(token, gos_mode))
+        nuget_config.chmod(0o600)
+        log("info", f"Wrote {nuget_config} (GOS premium NuGet registry, {gos_mode} mode)")
+    elif not connect_to_fortknox:
+        log("info", "connect_to_fortknox=false — skipping nuget.config; verify hook will "
+                    "restore .NET dependencies from nuget.org only")
+    else:
+        log("warn", "No CLI token available — skipping nuget.config; "
+                    "dotnet restore in the verify hook will not resolve lineaje-rebuilt versions")
+
     if not VERIFY_SCRIPT_SRC.exists():
         raise RuntimeError(f"verify script missing from the action: {VERIFY_SCRIPT_SRC}")
     verify_script = veecli_dir / VERIFY_SCRIPT_NAME
@@ -1834,8 +1871,9 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
         MVN_BIN_DIR=_maven_bin_dir() if language == "java" else "",
+        DOTNET_BIN_DIR=_dotnet_bin_dir() if language == "dotnet" else "",
         GO_BIN_DIR=_go_bin_dir(language_version) if language == "golang" else "",
-        REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"java", "golang"} and repo_root) else "",
+        REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"java", "golang", "dotnet"} and repo_root) else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
@@ -2039,7 +2077,7 @@ def main():
     parser.add_argument("--skip-fix-plan", action="store_true", default=False, help="Skip fix plan after scan")
     parser.add_argument("--gos-fix-plan", action="store_true", default=False,
                         help="After the fix plan, apply it via the GPT service and run `veecli fix` to "
-                            "download patched manifests (Python, Node.js, Java and Go source scans only)")
+                            "download patched manifests (Python, Node.js, Java, Go and .NET source scans only)")
     parser.add_argument("--output-fix-dir", default="",
                         help="Where `veecli fix` writes patched manifests (default: <output-dir>/fix)")
     parser.add_argument("--no-connect-to-fortknox", action="store_true", default=False,
@@ -2073,8 +2111,8 @@ def main():
     # for it to act on in image mode.
     if args.gos_fix_plan and scan_mode != "source":
         sys.exit("[error] --gos-fix-plan is only supported for source scans")
-    if args.gos_fix_plan and args.language not in {"python", "node", "java", "golang"}:
-        sys.exit("[error] --gos-fix-plan is only supported for Python, Node.js, Java and Go source scans")
+    if args.gos_fix_plan and args.language not in {"python", "node", "java", "golang", "dotnet"}:
+        sys.exit("[error] --gos-fix-plan is only supported for Python, Node.js, Java, Go and .NET source scans")
     if args.gos_fix_plan and args.skip_fix_plan:
         sys.exit("[error] --gos-fix-plan cannot be combined with --skip-fix-plan")
 
