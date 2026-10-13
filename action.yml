@@ -123,6 +123,10 @@ inputs:
     description: "Enable fast scan mode (true | false). Defaults to true. Set to false for a deeper but slower scan."
     required: false
     default: "true"
+  no_lookup:
+    description: "Pass --no-lookup to the veecli collect command (true | false). Defaults to false."
+    required: false
+    default: "false"
   gos_mode:
     description: "GOS premium registry mode: observe | enforce"
     required: false
@@ -567,6 +571,10 @@ runs:
 
         if [ "${{ inputs.fast_scan }}" = "true" ]; then
           SCAN_ARGS+=(--fast-scan)
+        fi
+
+        if [ "${{ inputs.no_lookup }}" = "true" ]; then
+          SCAN_ARGS+=(--no-lookup)
         fi
 
         SCAN_ARGS+=(--gos-mode "${{ inputs.gos_mode }}")
