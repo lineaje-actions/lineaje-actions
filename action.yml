@@ -124,7 +124,7 @@ inputs:
     required: false
     default: "true"
   no_lookup:
-    description: "Pass --no-lookup to the veecli collect command (true | false). Defaults to false."
+    description: "Pass --no-lookup to the veecli collect command (true | false). Defaults to false, but is always enabled when language is java."
     required: false
     default: "false"
   gos_mode:

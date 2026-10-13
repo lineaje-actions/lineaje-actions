@@ -2009,7 +2009,7 @@ def main():
     parser.add_argument("--src-url",      default="", help="GitHub repository URL (source scan)")
     parser.add_argument("--matching-ref", default="", help="Branch / tag / commit (source scan)")
     parser.add_argument("--fast-scan",    action="store_true", default=False, help="Pass --fast-scan to veecli")
-    parser.add_argument("--no-lookup",    action="store_true", default=False, help="Pass --no-lookup to veecli collect")
+    parser.add_argument("--no-lookup",    action="store_true", default=False, help="Pass --no-lookup to veecli collect (always on for --language java)")
     parser.add_argument("--gos-mode", default="observe", choices=["observe", "enforce"],
                         help="GOS premium registry mode: observe | enforce (default: observe)")
     parser.add_argument("--exclude-test-dependency",     default="true", help="Exclude test deps (source scan, true/false)")
@@ -2150,11 +2150,12 @@ def main():
 
     # ── 2. Run veecli collect ──────────────────────────────────────────────────
     cli_token = args.refresh_token
+    no_lookup = args.no_lookup or args.language == "java"
     if scan_mode == "image":
         output = run_veecli_image(
             args.veecli, args.image, args.name, args.version,
             args.org_name, args.output_dir, args.metafiles, args.image_source_type,
-            cli_token, args.gos_mode, args.no_lookup,
+            cli_token, args.gos_mode, no_lookup,
         )
     else:
         exclude_test     = args.exclude_test_dependency.lower()     not in ("false", "0", "no")
@@ -2171,7 +2172,7 @@ def main():
         )
         output = run_veecli_source(
             args.veecli, args.input_json, args.org_name, args.output_dir, args.fast_scan,
-            cli_token, args.gos_mode, args.no_lookup,
+            cli_token, args.gos_mode, no_lookup,
         )
 
     job_id = parse_job_id(output)
