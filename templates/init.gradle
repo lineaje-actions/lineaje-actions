@@ -1,0 +1,44 @@
+// Rendered by write_fix_config() in lineaje_scan_gh.py into <veecli dir>/lineaje-verify-init.gradle.
+// Double-underscore placeholders are substituted at write time.
+//
+// Contains no raw credentials: the password is read from the verify hook's
+// environment (ARTIFACTORY_MAVEN_TOKEN) at build time, same principle as
+// lineaje-verify-settings.xml's Maven-interpolated reference. Still written
+// chmod 600 and never logged.
+//
+// Adds the Fortknox GOS premium Maven registry next to whatever repositories the
+// project already declares, so Lineaje-rebuilt versions resolve. The registry is
+// only added where the project already has repositories: adding one to a project
+// or settings block that declared none would stop Gradle falling back to the
+// repositories configured on the other side.
+
+def addFortknox = { repos ->
+    repos.maven {
+        name = 'gos-premium-maven'
+        url = uri('__REGISTRY_URL__')
+        credentials {
+            username = '__USERNAME__'
+            password = System.getenv('ARTIFACTORY_MAVEN_TOKEN')
+        }
+    }
+}
+
+// Gradle 6.8+ only. Older versions have no settings-level repositories, so the
+// project-level hook below is the only one that applies.
+settingsEvaluated { settings ->
+    try {
+        def repos = settings.dependencyResolutionManagement.repositories
+        if (!repos.isEmpty()) {
+            addFortknox(repos)
+        }
+    } catch (Throwable ignored) {
+    }
+}
+
+allprojects {
+    afterEvaluate { project ->
+        if (!project.repositories.isEmpty()) {
+            addFortknox(project.repositories)
+        }
+    }
+}

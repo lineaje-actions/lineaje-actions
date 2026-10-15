@@ -124,7 +124,7 @@ inputs:
     required: false
     default: "true"
   no_lookup:
-    description: "Pass --no-lookup to the veecli collect command (true | false). Defaults to false."
+    description: "Pass --no-lookup to the veecli collect command (true | false). Defaults to false, but is always enabled when language is java."
     required: false
     default: "false"
   gos_mode:
@@ -373,6 +373,17 @@ runs:
         key: veecli-mvn-verify-repo-cache-${{ github.run_id }}
         restore-keys: |
           veecli-mvn-verify-repo-cache-
+
+    # Same reasoning, for the Gradle projects the same hook builds with
+    # `gradle compileJava compileTestJava` (GRADLE_USER_HOME lives under third_party).
+    - name: Cache Gradle verify-hook user home
+      if: inputs.scan_type == 'source' && inputs.language == 'java' && inputs.post_scan == 'fix_plan_gos_compat'
+      uses: actions/cache@v4
+      with:
+        path: /opt/veecli/third_party/gradle-verify-home
+        key: veecli-gradle-verify-home-${{ github.run_id }}
+        restore-keys: |
+          veecli-gradle-verify-home-
 
     # ── 4e. Cache Go verify-hook module/build cache ───────────────────────────
     # Same reasoning as 4d, for fix_plan_gos_compat's `go build ./...` — GOMODCACHE
