@@ -20,13 +20,15 @@
 #
 # Verifies the patched manifest for the selected language under the task
 # directory: requirements.txt through a Python venv, package.json through npm,
-# pom.xml through Maven resolve + test-compile (no test execution — see the
-# java case below), or go.mod through `go build ./...`. A non-zero exit makes
+# pom.xml through Maven resolve + test-compile and build.gradle[.kts] through
+# Gradle compileJava + compileTestJava (no test execution — see the java case
+# below), or go.mod through `go build ./...`. A non-zero exit makes
 # veecli skip the copy and fail the agent.
 #
 # Usage:
 #   ./lineaje-verify.sh --task-dir DIR --language python|node|java|go \
-#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--go-bin-dir DIR] \
+#       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--gradle-install-dir DIR] \
+#       [--go-bin-dir DIR] \
 #       [--repo-root DIR] [--connect-to-fortknox true|false]
 #
 # --repo-root (java and go) is the original full repository checkout, as
@@ -118,11 +120,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIP_CONFIG="${SCRIPT_DIR}/lineaje-verify-pip.conf"
 NPM_CONFIG="${SCRIPT_DIR}/lineaje-verify.npmrc"
 MAVEN_SETTINGS="${SCRIPT_DIR}/lineaje-verify-settings.xml"
+GRADLE_INIT="${SCRIPT_DIR}/lineaje-verify-init.gradle"
 
 REPO_ROOT=""
 LANGUAGE=""
 NODE_BIN_DIR=""
 MVN_BIN_DIR=""
+GRADLE_INSTALL_DIR=""
 GO_BIN_DIR=""
 ORIG_REPO_ROOT=""
 CONNECT_TO_FORTKNOX="true"
@@ -132,6 +136,7 @@ while [[ $# -gt 0 ]]; do
         --language) LANGUAGE="${2:-}"; shift 2 ;;
         --node-bin-dir) NODE_BIN_DIR="${2:-}"; shift 2 ;;
         --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
+        --gradle-install-dir) GRADLE_INSTALL_DIR="${2:-}"; shift 2 ;;
         --go-bin-dir) GO_BIN_DIR="${2:-}"; shift 2 ;;
         --repo-root) ORIG_REPO_ROOT="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
@@ -151,6 +156,7 @@ ANY_INSTALL_FAILED=0
 NODE_PACKAGE_DIRS=()
 GENERATED_LOCKFILES=()
 JAVA_PROJECT_DIRS=()
+GRADLE_PROJECT_DIRS=()
 
 cleanup_verify_artifacts() {
     # The "${ARR[@]+"${ARR[@]}"}" form (rather than plain "${ARR[@]}") avoids an
@@ -166,6 +172,17 @@ cleanup_verify_artifacts() {
     done
     for project_dir in "${JAVA_PROJECT_DIRS[@]+"${JAVA_PROJECT_DIRS[@]}"}"; do
         find "$project_dir" -type d -name target -prune -exec rm -rf {} +
+    done
+    # Gradle output: only a `build` dir sitting next to a Gradle build script is
+    # removed, so a source directory that merely happens to be named "build" is not.
+    local gdir bdir
+    for gdir in "${GRADLE_PROJECT_DIRS[@]+"${GRADLE_PROJECT_DIRS[@]}"}"; do
+        while IFS= read -r bdir; do
+            if [[ -f "$(dirname "$bdir")/build.gradle" || -f "$(dirname "$bdir")/build.gradle.kts" ]]; then
+                rm -rf "$bdir"
+            fi
+        done < <(find "$gdir" -type d -name build 2>/dev/null)
+        find "$gdir" -type d -name .gradle -prune -exec rm -rf {} + 2>/dev/null
     done
 }
 
@@ -453,6 +470,131 @@ case "$LANGUAGE" in
                 else
                     log_error "mvn test-compile FAILED for ${pom}"
                     print_redacted_log "$mvn_log"
+                    ANY_INSTALL_FAILED=1
+                fi
+            done
+        fi
+
+        # ── Gradle ────────────────────────────────────────────────────────────
+        # Same BUILD_ROOT as Maven (reconstructed above). Handled independently of
+        # pom.xml, so a directory carrying both build files gets both verified.
+        GRADLE_INIT_ARGS=()
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            if [[ -f "$GRADLE_INIT" ]]; then
+                GRADLE_INIT_ARGS=(--init-script "$GRADLE_INIT")
+                log_info "Using gradle init script: ${GRADLE_INIT}"
+            else
+                log_error "lineaje-verify-init.gradle not found; GOS-rebuilt artifacts will not resolve"
+            fi
+        else
+            log_info "connect_to_fortknox=false — resolving Gradle dependencies from the project's own repositories only; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
+        fi
+
+        # Same reasoning as the Maven repo cache: one stable GRADLE_USER_HOME
+        # under SCRIPT_DIR is reused across the several invocations veecli makes
+        # (one per patched component) and across workflow runs. Gradle's cache is
+        # content-addressed, so reuse is safe. Falls back to WORKDIR when
+        # SCRIPT_DIR is not writable.
+        GRADLE_HOME_DIR="${SCRIPT_DIR}/third_party/gradle-verify-home"
+        if ! mkdir -p "$GRADLE_HOME_DIR" 2>/dev/null; then
+            GRADLE_HOME_DIR="${WORKDIR}/gradle-home"
+            mkdir -p "$GRADLE_HOME_DIR"
+        fi
+        log_info "Using Gradle user home: ${GRADLE_HOME_DIR}"
+
+        # Every dir that holds a settings or build script is a candidate; only the
+        # outermost of each nest is built. Subprojects, buildSrc and included
+        # modules sit under their root's directory and are built as part of it —
+        # building them standalone would fail to resolve project(":sibling")
+        # dependencies only the root build can satisfy.
+        ALL_GRADLE_DIRS=()
+        while IFS= read -r file; do
+            ALL_GRADLE_DIRS+=("$(dirname "$file")")
+        done < <(find "${BUILD_ROOT}" -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \
+                    -o -name "build.gradle" -o -name "build.gradle.kts" \) \
+                    -not -path "*/build/*" -not -path "*/.gradle/*" -not -path "*/node_modules/*" 2>/dev/null | sort -u)
+
+        GRADLE_ROOTS=()
+        if [[ "${#ALL_GRADLE_DIRS[@]}" -gt 0 ]]; then
+            while IFS= read -r gdir; do
+                [[ -n "$gdir" ]] || continue
+                nested=0
+                for other in "${GRADLE_ROOTS[@]+"${GRADLE_ROOTS[@]}"}"; do
+                    case "$gdir" in
+                        "$other"/*) nested=1; break ;;
+                    esac
+                done
+                [[ "$nested" -eq 0 ]] && GRADLE_ROOTS+=("$gdir")
+            done < <(printf '%s\n' "${ALL_GRADLE_DIRS[@]}" | sort -u)
+        fi
+
+        if [[ "${#GRADLE_ROOTS[@]}" -eq 0 ]]; then
+            log_info "No Gradle build found."
+        else
+            log_info "Found ${#GRADLE_ROOTS[@]} root Gradle build(s):"
+            for f in "${GRADLE_ROOTS[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            # Major version of the JDK on PATH (JAVA_HOME's bin is prepended by the
+            # action), used to pick a Gradle that can actually run on it.
+            JDK_MAJOR="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9]*\)\.\{0,1\}\([0-9]*\).*/\1 \2/p' | awk '{print ($1==1)?$2:$1}')"
+            case "${JDK_MAJOR:-}" in
+                ''|*[!0-9]*) GRADLE_DEFAULT="8.14.4" ;;
+                *)
+                    if   [[ "$JDK_MAJOR" -le 16 ]]; then GRADLE_DEFAULT="7.6.6"
+                    elif [[ "$JDK_MAJOR" -le 23 ]]; then GRADLE_DEFAULT="8.14.4"
+                    else                                  GRADLE_DEFAULT="9.2.1"
+                    fi ;;
+            esac
+
+            for gdir in "${GRADLE_ROOTS[@]}"; do
+                # Android builds need the Android SDK and plugin, neither of which
+                # this runner has — skipped with a warning rather than rejected, so
+                # an otherwise valid patch is not blocked by tooling we cannot run.
+                if grep -qsE 'com\.android\.(application|library)|com\.android\.tools\.build' \
+                        "${gdir}"/build.gradle "${gdir}"/build.gradle.kts "${gdir}"/settings.gradle "${gdir}"/settings.gradle.kts 2>/dev/null; then
+                    log_info "WARNING - ${gdir} is an Android build; skipping Gradle verification"
+                    continue
+                fi
+
+                FOUND_ANY_MANIFEST=1
+                GRADLE_PROJECT_DIRS+=("$gdir")
+
+                if [[ -x "${gdir}/gradlew" ]]; then
+                    GRADLE_CMD="${gdir}/gradlew"
+                    log_info "Using project wrapper: ${GRADLE_CMD}"
+                else
+                    GRADLE_CMD=""
+                    if [[ -n "$GRADLE_INSTALL_DIR" && -x "${GRADLE_INSTALL_DIR}/gradle-${GRADLE_DEFAULT}/bin/gradle" ]]; then
+                        GRADLE_CMD="${GRADLE_INSTALL_DIR}/gradle-${GRADLE_DEFAULT}/bin/gradle"
+                        log_info "Using pinned Gradle ${GRADLE_DEFAULT} (JDK ${JDK_MAJOR:-unknown}): ${GRADLE_CMD}"
+                    elif command -v gradle >/dev/null 2>&1; then
+                        GRADLE_CMD="gradle"
+                        log_info "Using Gradle from PATH"
+                    else
+                        log_error "No Gradle available for ${gdir} (no wrapper, no install under --gradle-install-dir, nothing on PATH)"
+                        ANY_INSTALL_FAILED=1
+                        continue
+                    fi
+                fi
+
+                # compileJava + compileTestJava resolve the full compile and test
+                # classpaths, same idea as `mvn test-compile`: resolution failures
+                # (an unpublished pin) fail the build. The `dependencies` task is
+                # deliberately not used — it prints unresolved dependencies
+                # without failing. No test execution.
+                gradle_log="${WORKDIR}/gradle_compile.log"
+                : > "$gradle_log"
+                log_info "Running: gradle compileJava compileTestJava (cwd=${gdir})"
+                if (cd "${gdir}" && GRADLE_USER_HOME="$GRADLE_HOME_DIR" "${GRADLE_CMD}" \
+                        --no-daemon --console=plain -q \
+                        "${GRADLE_INIT_ARGS[@]+"${GRADLE_INIT_ARGS[@]}"}" \
+                        compileJava compileTestJava >"$gradle_log" 2>&1); then
+                    log_info "gradle compile succeeded for ${gdir}"
+                else
+                    log_error "gradle compile FAILED for ${gdir}"
+                    print_redacted_log "$gradle_log"
                     ANY_INSTALL_FAILED=1
                 fi
             done

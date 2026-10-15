@@ -1667,6 +1667,7 @@ VERIFY_SCRIPT_NAME      = "lineaje-verify.sh"
 VERIFY_NPMRC_NAME       = "lineaje-verify.npmrc"
 VERIFY_PIP_CONF_NAME    = "lineaje-verify-pip.conf"
 VERIFY_SETTINGS_XML_NAME = "lineaje-verify-settings.xml"
+VERIFY_INIT_GRADLE_NAME = "lineaje-verify-init.gradle"
 
 ACTION_DIR    = Path(__file__).resolve().parent
 TEMPLATES_DIR = ACTION_DIR / "templates"
@@ -1694,8 +1695,10 @@ def _render_template(name: str, **subs) -> str:
 # where it finds its npmrc, pip config and third_party tree relative to itself.
 VERIFY_SCRIPT_SRC = Path(__file__).resolve().parent / VERIFY_SCRIPT_NAME
 
-# Agent-level timeout written into fix.yaml.
-VERIFY_TIMEOUT_SECONDS = 1800
+# Agent-level timeout written into fix.yaml. Raised from 1800 for Java: a cold
+# Gradle verify downloads the distribution and the full dependency graph once per
+# patched component, and a multi-module build can take well past half an hour.
+VERIFY_TIMEOUT_SECONDS = 3600
 
 def _npmrc_content(token: str, gos_mode: str) -> str:
     """Use public npm by default and token auth for the GOS premium registry.
@@ -1708,6 +1711,20 @@ def _npmrc_content(token: str, gos_mode: str) -> str:
     return _render_template(
         "npmrc",
         SCOPED=registry.split("://", 1)[1],
+    )
+
+
+def _gradle_init_content(token: str, gos_mode: str) -> str:
+    """Gradle init script adding the GOS premium Maven registry to the verify build.
+
+    Like settings.xml, the password is read from ARTIFACTORY_MAVEN_TOKEN in the
+    hook's environment at build time rather than embedded here.
+    """
+    gos = _gos_premium_env(token, gos_mode)
+    return _render_template(
+        "init.gradle",
+        REGISTRY_URL=gos["GOS_PREMIUM_MAVEN_REGISTRY"],
+        USERNAME=gos["GOS_PREMIUM_REGISTRY_USERNAME"],
     )
 
 
@@ -1752,6 +1769,13 @@ def _maven_bin_dir() -> str:
     """Maven is a single pinned version (MAVEN_VERSION), unlike per-version Node/Python —
     no language_version lookup needed."""
     return str(THIRD_PARTY / MAVEN_DIR / "bin")
+
+
+def _gradle_install_dir() -> str:
+    """Directory holding every gradle-<version>/ install. Unlike Maven there is no
+    single pinned version, so the hook picks one itself (the project's wrapper
+    first, then by JDK) from the installs under this directory."""
+    return str(THIRD_PARTY)
 
 
 def _go_bin_dir(version: str) -> str:
@@ -1828,6 +1852,18 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         log("warn", "No CLI token available — skipping maven settings.xml; "
                     "mvn in the verify hook will not resolve lineaje-rebuilt versions")
 
+    init_gradle = veecli_dir / VERIFY_INIT_GRADLE_NAME
+    if connect_to_fortknox and token:
+        init_gradle.write_text(_gradle_init_content(token, gos_mode))
+        init_gradle.chmod(0o600)
+        log("info", f"Wrote {init_gradle} (GOS premium maven registry for Gradle, {gos_mode} mode)")
+    elif not connect_to_fortknox:
+        log("info", "connect_to_fortknox=false — skipping Gradle init script; verify hook will "
+                    "resolve Gradle dependencies from the project's own repositories only")
+    else:
+        log("warn", "No CLI token available — skipping Gradle init script; "
+                    "gradle in the verify hook will not resolve lineaje-rebuilt versions")
+
     if not VERIFY_SCRIPT_SRC.exists():
         raise RuntimeError(f"verify script missing from the action: {VERIFY_SCRIPT_SRC}")
     verify_script = veecli_dir / VERIFY_SCRIPT_NAME
@@ -1840,6 +1876,7 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         LANGUAGE=language,
         NODE_BIN_DIR=_node_bin_dir(language_version) if language == "node" else "",
         MVN_BIN_DIR=_maven_bin_dir() if language == "java" else "",
+        GRADLE_INSTALL_DIR=_gradle_install_dir() if language == "java" else "",
         GO_BIN_DIR=_go_bin_dir(language_version) if language == "golang" else "",
         REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"java", "golang"} and repo_root) else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
