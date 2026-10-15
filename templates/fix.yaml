@@ -25,6 +25,8 @@ config:
           - "__NODE_BIN_DIR__"
           - "--mvn-bin-dir"
           - "__MVN_BIN_DIR__"
+          - "--dotnet-bin-dir"
+          - "__DOTNET_BIN_DIR__"
           - "--gradle-install-dir"
           - "__GRADLE_INSTALL_DIR__"
           - "--go-bin-dir"

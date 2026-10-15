@@ -22,22 +22,24 @@
 # directory: requirements.txt through a Python venv, package.json through npm,
 # pom.xml through Maven resolve + test-compile and build.gradle[.kts] through
 # Gradle compileJava + compileTestJava (no test execution — see the java case
-# below), or go.mod through `go build ./...`. A non-zero exit makes
-# veecli skip the copy and fail the agent.
+# below), go.mod through `go build ./...`, or .NET project files through
+# `dotnet restore` (see the dotnet case). A non-zero exit makes veecli skip the
+# copy and fail the agent.
 #
 # Usage:
-#   ./lineaje-verify.sh --task-dir DIR --language python|node|java|go \
+#   ./lineaje-verify.sh --task-dir DIR --language python|node|java|go|golang|dotnet \
 #       [--node-bin-dir DIR] [--mvn-bin-dir DIR] [--gradle-install-dir DIR] \
-#       [--go-bin-dir DIR] \
+#       [--dotnet-bin-dir DIR] [--go-bin-dir DIR] \
 #       [--repo-root DIR] [--connect-to-fortknox true|false]
 #
-# --repo-root (java and go) is the original full repository checkout, as
+# --repo-root (java, go and dotnet) is the original full repository checkout, as
 # opposed to --task-dir, which veecli populates with only the specific file(s)
 # a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
 # just go.mod out of a module with a local `replace` directive) — not a full
 # copy of the project. A Maven multi-module build needs the parent POM and
-# sibling modules; a Go module with a relative `replace` needs its target —
-# both need the whole tree. When --repo-root is given, these cases reconstruct
+# sibling modules; a Go module with a relative `replace` needs its target; a
+# .NET project needs its ProjectReferences and Directory.*.props — all need
+# the whole tree. When --repo-root is given, these cases reconstruct
 # it: copy --repo-root, then overlay --task-dir's patched file(s) on top at
 # their same relative paths, and build that. Without --repo-root, they fall
 # back to treating --task-dir as the whole project, same as the python/node
@@ -45,8 +47,9 @@
 # dependency.
 #
 # --connect-to-fortknox false (default true) makes the node case check
-# package.json against the public npm registry and the java case check pom.xml
-# against Maven Central instead of the Fortknox GOS premium registry, so
+# package.json against the public npm registry, the java case check pom.xml
+# against Maven Central, and the dotnet case restore from nuget.org only,
+# instead of the Fortknox GOS premium registry, so
 # Lineaje-rebuilt (-lineaje-N) packages fail to resolve and their patches are
 # rejected. No effect on the python case, which never used Fortknox. No effect
 # on the go case either — there is no GOS/Fortknox Go module proxy yet, so it
@@ -120,6 +123,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIP_CONFIG="${SCRIPT_DIR}/lineaje-verify-pip.conf"
 NPM_CONFIG="${SCRIPT_DIR}/lineaje-verify.npmrc"
 MAVEN_SETTINGS="${SCRIPT_DIR}/lineaje-verify-settings.xml"
+NUGET_CONFIG="${SCRIPT_DIR}/lineaje-verify.nuget.config"
 GRADLE_INIT="${SCRIPT_DIR}/lineaje-verify-init.gradle"
 
 REPO_ROOT=""
@@ -128,6 +132,7 @@ NODE_BIN_DIR=""
 MVN_BIN_DIR=""
 GRADLE_INSTALL_DIR=""
 GO_BIN_DIR=""
+DOTNET_BIN_DIR=""
 ORIG_REPO_ROOT=""
 CONNECT_TO_FORTKNOX="true"
 while [[ $# -gt 0 ]]; do
@@ -138,6 +143,7 @@ while [[ $# -gt 0 ]]; do
         --mvn-bin-dir) MVN_BIN_DIR="${2:-}"; shift 2 ;;
         --gradle-install-dir) GRADLE_INSTALL_DIR="${2:-}"; shift 2 ;;
         --go-bin-dir) GO_BIN_DIR="${2:-}"; shift 2 ;;
+        --dotnet-bin-dir) DOTNET_BIN_DIR="${2:-}"; shift 2 ;;
         --repo-root) ORIG_REPO_ROOT="${2:-}"; shift 2 ;;
         --connect-to-fortknox) CONNECT_TO_FORTKNOX="${2:-true}"; shift 2 ;;
         *)          shift ;;
@@ -156,6 +162,7 @@ ANY_INSTALL_FAILED=0
 NODE_PACKAGE_DIRS=()
 GENERATED_LOCKFILES=()
 JAVA_PROJECT_DIRS=()
+DOTNET_PROJECT_DIRS=()
 GRADLE_PROJECT_DIRS=()
 
 cleanup_verify_artifacts() {
@@ -172,6 +179,9 @@ cleanup_verify_artifacts() {
     done
     for project_dir in "${JAVA_PROJECT_DIRS[@]+"${JAVA_PROJECT_DIRS[@]}"}"; do
         find "$project_dir" -type d -name target -prune -exec rm -rf {} +
+    done
+    for project_dir in "${DOTNET_PROJECT_DIRS[@]+"${DOTNET_PROJECT_DIRS[@]}"}"; do
+        rm -rf "${project_dir}/obj"
     done
     # Gradle output: only a `build` dir sitting next to a Gradle build script is
     # removed, so a source directory that merely happens to be named "build" is not.
@@ -192,7 +202,7 @@ trap cleanup_verify_artifacts EXIT
 # just core/pom.xml out of a core+app reactor, or just go.mod out of a module
 # with a local `replace` directive) — not a full copy of the project. Maven's
 # parent POM and Go's relative `replace` targets both need the whole tree to
-# resolve. When --repo-root (the real checkout) is available, reconstruct it:
+# resolve (as do a .NET project's ProjectReferences and Directory.*.props). When --repo-root (the real checkout) is available, reconstruct it:
 # copy --repo-root, then overlay --task-dir's patched file(s) on top at their
 # real relative paths, and build from that instead. Sets BUILD_ROOT. Without
 # --repo-root, falls back to treating --task-dir as the whole project —
@@ -600,7 +610,109 @@ case "$LANGUAGE" in
             done
         fi
         ;;
-    go)
+    dotnet)
+        if [[ -n "$DOTNET_BIN_DIR" && -d "$DOTNET_BIN_DIR" ]]; then
+            export DOTNET_ROOT="$DOTNET_BIN_DIR"
+            export PATH="${DOTNET_BIN_DIR}:${PATH}"
+        fi
+        export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+        if ! command -v dotnet >/dev/null 2>&1; then
+            log_error "dotnet not found (dotnet bin directory: ${DOTNET_BIN_DIR:-not provided})."
+            exit 1
+        fi
+
+        # The nuget.config reads its password from %ARTIFACTORY_NUGET_TOKEN%.
+        # veecli should export that into the hook's environment; fall back to
+        # the registry token it is documented to export as well.
+        : "${ARTIFACTORY_NUGET_TOKEN:=${GOS_PREMIUM_REGISTRY_TOKEN:-}}"
+        export ARTIFACTORY_NUGET_TOKEN
+
+        # --configfile makes NuGet use ONLY that file (nuget.org + the GOS
+        # feed, see templates/nuget.config); --source on its own overrides the
+        # configured sources the same way for the public-only case.
+        NUGET_ARGS=()
+        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
+            if [[ -f "$NUGET_CONFIG" && -n "${ARTIFACTORY_NUGET_TOKEN}" ]]; then
+                NUGET_ARGS=(--configfile "$NUGET_CONFIG")
+                log_info "Using NuGet configuration: ${NUGET_CONFIG}"
+            else
+                log_error "lineaje-verify.nuget.config or ARTIFACTORY_NUGET_TOKEN missing; GOS-rebuilt packages will not resolve"
+                NUGET_ARGS=(--source "https://api.nuget.org/v3/index.json")
+            fi
+        else
+            NUGET_ARGS=(--source "https://api.nuget.org/v3/index.json")
+            log_info "connect_to_fortknox=false — restoring .NET dependencies from nuget.org only; Lineaje-rebuilt packages will not resolve and their patches will be rejected"
+        fi
+
+        # Same reasoning as the Maven repo cache: NuGet packages are immutable
+        # per version, so reuse is always safe, and SCRIPT_DIR persists across
+        # the several lineaje-verify.sh invocations veecli makes — WORKDIR
+        # does not.
+        NUGET_PACKAGES_DIR="${SCRIPT_DIR}/third_party/nuget-verify-cache"
+        if ! mkdir -p "$NUGET_PACKAGES_DIR" 2>/dev/null; then
+            NUGET_PACKAGES_DIR="${WORKDIR}/nuget-packages"
+            mkdir -p "$NUGET_PACKAGES_DIR"
+        fi
+        log_info "Using NuGet packages cache: ${NUGET_PACKAGES_DIR}"
+
+        reconstruct_build_root
+
+        # Decide what to restore. Restoring a project also restores its
+        # ProjectReferences, so one entry per touched project is enough:
+        #  - a project file in --task-dir (a .csproj/.fsproj/.vbproj whose
+        #    PackageReference versions were patched) → restore that project;
+        #  - Directory.Packages.props / Directory.Build.props in --task-dir
+        #    (central package versions) → restore every project beneath that
+        #    file's directory, since any of them may consume the bumped version.
+        # packages.config (legacy) is not restorable with `dotnet restore` on
+        # Linux, so it is not a target.
+        TARGETS_FILE="${WORKDIR}/dotnet-targets.txt"
+        : > "$TARGETS_FILE"
+        while IFS= read -r file; do
+            printf '%s\n' "${BUILD_ROOT}/${file#"${REPO_ROOT}"/}" >>"$TARGETS_FILE"
+        done < <(find "${REPO_ROOT}" -type f \( -name "*.csproj" -o -name "*.fsproj" -o -name "*.vbproj" \) -not -path "*/bin/*" -not -path "*/obj/*" 2>/dev/null)
+        while IFS= read -r file; do
+            props_dir="$(dirname "${BUILD_ROOT}/${file#"${REPO_ROOT}"/}")"
+            find "$props_dir" -type f \( -name "*.csproj" -o -name "*.fsproj" -o -name "*.vbproj" \) -not -path "*/bin/*" -not -path "*/obj/*" 2>/dev/null >>"$TARGETS_FILE"
+        done < <(find "${REPO_ROOT}" -type f \( -name "Directory.Packages.props" -o -name "Directory.Build.props" \) 2>/dev/null)
+
+        PROJECT_FILES=()
+        while IFS= read -r file; do
+            [[ -n "$file" && -f "$file" ]] && PROJECT_FILES+=("$file")
+        done < <(sort -u "$TARGETS_FILE")
+
+        if [[ "${#PROJECT_FILES[@]}" -eq 0 ]]; then
+            log_info "No .NET project files to restore."
+        else
+            FOUND_ANY_MANIFEST=1
+            log_info "Found ${#PROJECT_FILES[@]} .NET project file(s) to restore:"
+            for f in "${PROJECT_FILES[@]}"; do
+                log_info "  - ${f}"
+            done
+
+            for proj in "${PROJECT_FILES[@]}"; do
+                DOTNET_PROJECT_DIRS+=("$(dirname "$proj")")
+                # No --locked-mode, and RestoreLockedMode is forced off: a
+                # patched version bump legitimately disagrees with an existing
+                # packages.lock.json, which would otherwise reject every patch
+                # (NU1004) for a project that opts in to locked restores.
+                dotnet_log="${WORKDIR}/dotnet_restore.log"
+                : > "$dotnet_log"
+                log_info "Running: dotnet restore ${proj}"
+                if dotnet restore "${proj}" \
+                        "${NUGET_ARGS[@]}" \
+                        --packages "${NUGET_PACKAGES_DIR}" \
+                        -p:RestoreLockedMode=false >"$dotnet_log" 2>&1; then
+                    log_info "dotnet restore succeeded for ${proj}"
+                else
+                    log_error "dotnet restore FAILED for ${proj}. Redacted output follows:"
+                    print_redacted_log "$dotnet_log"
+                    ANY_INSTALL_FAILED=1
+                fi
+            done
+        fi
+        ;;
+    go|golang)
         # No GOS/Fortknox proxy for Go modules exists yet — always the public
         # proxy, regardless of --connect-to-fortknox. Revisit once one exists
         # (mirror the java/node case: a registry URL plus credentials wired
