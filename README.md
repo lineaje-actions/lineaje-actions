@@ -7,14 +7,14 @@ The action installs the required scanner and language runtime, submits the scan,
 - **Image scan** → patched `Dockerfile`
 - **Supported source scan with `fix_plan`** → patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.)
 - **Any `fix_plan` or `fix_plan_gos_compat` run** → complete fix-plan response as `raw-fix-plan.json`
-- **Python, Node.js, Java or .NET source scan with `fix_plan_gos_compat`** → Fortknox package availability and installation compatibility checks, with verified candidate manifests uploaded as artifacts
+- **Python, Node.js, Java, .NET or Go source scan with `fix_plan_gos_compat`** → Fortknox package availability and installation compatibility checks, with verified candidate manifests uploaded as artifacts
 
 ### Compatibility at a glance
 
 | Scan target | Supported ecosystems | `scan_only` | `fix_plan` | `fix_plan_gos_compat` |
 |---|---|:---:|:---:|:---:|
 | Container image | Any containerized workload | ✓ | ✓ | — |
-| Source repository | Java, Python, Node.js, .NET, Go, Rust | ✓ | Java, Python, Node.js, .NET, Rust | Java, Python, Node.js, .NET |
+| Source repository | Java, Python, Node.js, .NET, Go, Rust | ✓ | Java, Python, Node.js, .NET, Go, Rust | Java, Python, Node.js, .NET, Go |
 
 Linux runners are required. For image scans, rebuild from the patched Dockerfile and scan the rebuilt image to verify fixes — see [Rebuild & rescan workflow](#rebuild--rescan-workflow).
 
@@ -330,7 +330,7 @@ jobs:
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written; cleared before each invocation. Use distinct paths to retain local output from multiple scans in one job. |
-| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python, Node.js, Java and .NET source scans. See [post_scan modes](#post_scan-modes). |
+| `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python, Node.js, Java, .NET and Go source scans. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 | `connect_to_fortknox` | no | `true` | `fix_plan_gos_compat` only — when `false`, the compat check only ever suggests publicly available package versions; Lineaje-rebuilt packages are excluded. See [`fix_plan_gos_compat`](#fix_plan_gos_compat). |
@@ -384,9 +384,9 @@ Artifact contents by scan type:
 | Scan type | `post_scan` | Artifact name | Files |
 |---|---|---|---|
 | `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
-| `source` (except Go) | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json` (whichever applies to the project) |
+| `source` | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json`, `go.mod`, `go.sum` (whichever applies to the project) |
 | image or supported source | `fix_plan` or `fix_plan_gos_compat` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
-| Python, Node.js, Java or .NET source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
+| Python, Node.js, Java, .NET or Go source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Fortknox-available, installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved |
 
 `lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
 
@@ -412,14 +412,14 @@ Download the raw response later in the same job:
 | Value | Scan types | What happens |
 |---|---|---|
 | `scan_only` | image · source | Scan only — vulnerability summary printed, no fix plan |
-| `fix_plan` | image · source except Go | Scan → generate fix plan → upload the raw response and any patched artifact |
-| `fix_plan_gos_compat` | Python, Node.js, Java and .NET source only | Scan → generate fix plan → check package availability in Fortknox → verify installation compatibility → upload candidate manifests |
+| `fix_plan` | image · source | Scan → generate fix plan → upload the raw response and any patched artifact |
+| `fix_plan_gos_compat` | Python, Node.js, Java, .NET and Go source only | Scan → generate fix plan → check package availability in Fortknox → verify installation compatibility → upload candidate manifests |
 
 With `fix_plan`, image scans upload a patched `Dockerfile`; supported source scans upload a patched dependency manifest (`pom.xml`, `build.gradle`, `requirements.txt`, `package.json`, etc.).
 
 ### `fix_plan_gos_compat`
 
-`fix_plan` provides the generated manifest from the fix plan. `fix_plan_gos_compat` checks whether its suggested packages are available in the Lineaje Fortknox Artifactory and whether the resulting Python, Node.js, Java or .NET manifests install successfully. It does not modify the checked-out repository or apply the fixes to the project. Verified candidate manifests are uploaded with the repository layout preserved, so a monorepo's per-module manifests remain in their own subdirectories.
+`fix_plan` provides the generated manifest from the fix plan. `fix_plan_gos_compat` checks whether its suggested packages are available in the Lineaje Fortknox Artifactory and whether the resulting Python, Node.js, Java, .NET or Go manifests install successfully. It does not modify the checked-out repository or apply the fixes to the project. Verified candidate manifests are uploaded with the repository layout preserved, so a monorepo's per-module manifests remain in their own subdirectories.
 
 Because plan generation and Fortknox availability processing run asynchronously, this mode takes noticeably longer than `fix_plan`: the action waits for the fix plan, waits for candidate-manifest tasks, and then runs installation verification before uploading the results.
 
@@ -436,8 +436,8 @@ Because plan generation and Fortknox availability processing run asynchronously,
 
 Notes:
 
-- **Python, Node.js, Java and .NET source scans only.** Other languages and image scans fail validation up front. Use `fix_plan` for image scans and supported source ecosystems; Go supports `scan_only` only.
-- **Python, Node.js, Java and .NET candidate manifests are installation-verified before being uploaded.** Python installs discovered `requirements.txt` files in a temporary virtual environment. Node.js runs `npm install` for discovered `package.json` files using the generated GOS npm configuration and a temporary cache. Java runs `mvn test-compile` (resolve + compile, no tests) against each project's root `pom.xml` using the generated GOS Maven configuration and a disposable local repository, preferring a project's own `./mvnw` wrapper when present. Gradle projects (`build.gradle`/`build.gradle.kts`) are verified the same way with `compileJava compileTestJava` against each root build, using a generated init script for the GOS registry, a shared Gradle user home, and the project's own `./gradlew` when present (otherwise a bundled Gradle chosen for the JDK). Android builds are skipped with a warning. .NET runs `dotnet restore` (restore only, no build) for each patched project file — and, when a central `Directory.Packages.props` / `Directory.Build.props` is patched, every project beneath it — using the generated GOS NuGet configuration and a shared packages cache; locked-mode restore is not used, so a patched version bump is not rejected for disagreeing with an existing `packages.lock.json`. Only the verifier matching the `language` input runs.
+- **Python, Node.js, Java, .NET and Go source scans only.** Other languages and image scans fail validation up front. Use `fix_plan` for image scans and supported source ecosystems.
+- **Python, Node.js, Java, .NET and Go candidate manifests are installation-verified before being uploaded.** Python installs discovered `requirements.txt` files in a temporary virtual environment. Node.js runs `npm install` for discovered `package.json` files using the generated GOS npm configuration and a temporary cache. Java runs `mvn test-compile` (resolve + compile, no tests) against each project's root `pom.xml` using the generated GOS Maven configuration and a disposable local repository, preferring a project's own `./mvnw` wrapper when present. Gradle projects (`build.gradle`/`build.gradle.kts`) are verified the same way with `compileJava compileTestJava` against each root build, using a generated init script for the GOS registry, a shared Gradle user home, and the project's own `./gradlew` when present (otherwise a bundled Gradle chosen for the JDK). Android builds are skipped with a warning. Go runs `go build -mod=mod ./...` for each patched `go.mod` (module mode with `GOTOOLCHAIN=local`; any `vendor/` is ignored, so re-run `go mod vendor` after applying a patch). Go is curated-only — it never connects to Fortknox, so Lineaje-rebuilt (`-lineaje-N`) candidates are dropped from the plan before submission, whatever `connect_to_fortknox` is set to. .NET runs `dotnet restore` (restore only, no build) for each patched project file — and, when a central `Directory.Packages.props` / `Directory.Build.props` is patched, every project beneath it — using the generated GOS NuGet configuration and a shared packages cache; locked-mode restore is not used, so a patched version bump is not rejected for disagreeing with an existing `packages.lock.json`. Only the verifier matching the `language` input runs.
 - Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact. The action does not write them back into the checked-out repository.
 - To consume the fixes at build time, point your package manager at the GOS registry — the rebuilt versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
 - **`connect_to_fortknox: false` excludes Lineaje-rebuilt packages entirely.** Only fixes using publicly available package versions are suggested and uploaded; any patch that would have needed a Lineaje-rebuilt (premium) package is dropped.
@@ -607,7 +607,7 @@ Pass the **major version** via `language_version` (e.g. `18`).
 
 Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mode and vendor-mode repositories are supported.
 
-> **Note:** `post_scan: fix_plan` is not yet supported for Go — the action automatically falls back to `scan_only` when it is set. `fix_plan_gos_compat` supports only Python, Node.js, Java and .NET source scans.
+> **Note:** `post_scan: fix_plan` and `fix_plan_gos_compat` are both supported for Go. `fix_plan_gos_compat` supports Python, Node.js, Java, .NET and Go source scans. For Go it is curated-only: patches contain only `go.mod` and are verified with `go build -mod=mod ./...` against the public Go proxy.
 
 | `language_version` | Go version |
 |---|---|
