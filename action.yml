@@ -134,7 +134,7 @@ inputs:
 
 outputs:
   fix_artifact_uploaded:
-    description: "Whether a fix plan artifact was produced and uploaded (true/false). Image: patched Dockerfile. Source: pom.xml / requirements.txt / package.json / build.gradle / go.mod etc."
+    description: "Whether a fix plan artifact was produced and uploaded (true/false). Image: patched Dockerfile. Source: pom.xml / requirements.txt / package.json / build.gradle etc."
     value: ${{ steps.lineaje_scan.outputs.fix_artifact_uploaded }}
   patched_dockerfile:
     description: "Absolute path to the patched Dockerfile on the runner (image scan + fix_plan only). Empty string otherwise."
@@ -616,7 +616,7 @@ runs:
             PATCHED_DOCKERFILE=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'Dockerfile*' | head -1)
             [ -n "$PATCHED_DOCKERFILE" ] && ARTIFACT_FOUND=true
           else
-            for pattern in 'pom.xml' 'build.gradle' 'build.gradle.kts' 'requirements.txt' 'Pipfile' 'pyproject.toml' 'package.json' 'package-lock.json' 'go.mod' 'go.sum'; do
+            for pattern in 'pom.xml' 'build.gradle' 'build.gradle.kts' 'requirements.txt' 'Pipfile' 'pyproject.toml' 'package.json' 'package-lock.json'; do
               if find "$OUTPUT_DIR" -maxdepth 1 -name "$pattern" | grep -q .; then
                 ARTIFACT_FOUND=true
                 break
@@ -743,8 +743,6 @@ runs:
           ${{ inputs.output_dir }}/pyproject.toml
           ${{ inputs.output_dir }}/package.json
           ${{ inputs.output_dir }}/package-lock.json
-          ${{ inputs.output_dir }}/go.mod
-          ${{ inputs.output_dir }}/go.sum
         if-no-files-found: ignore
 
     # ── 15. Upload raw fix plan response (fix_plan, fix_plan_gos_compat)
