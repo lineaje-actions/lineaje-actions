@@ -99,7 +99,7 @@ MAVEN_URL = f"https://archive.apache.org/dist/maven/maven-3/{MAVEN_VERSION}/bina
 MAVEN_DIR = f"maven-{MAVEN_VERSION}"
 
 GRADLE_VERSIONS = [
-    "9.2.1", "8.14.4", "8.9", "8.6", "8.4", "8.2", "8.1.1", "8.0.2",
+    "9.3.0", "9.2.1", "8.14.4", "8.14", "8.12", "8.9", "8.6", "8.5", "8.4", "8.2", "8.1.1", "8.0.2",
     "7.6.6", "7.5.1", "7.4.2",
     "6.9.1", "6.3",
     "5.6.4", "5.5.1",
@@ -950,6 +950,84 @@ def patch_tools_config_maven(veecli_path: str):
         json.dump(cfg, f, indent=4)
 
     log("info", f"tools-config.json: {patched} Maven entr{'y' if patched == 1 else 'ies'} updated to {MAVEN_VERSION}")
+
+
+def patch_tools_config_gradle(veecli_path: str, java_major: str):
+    """Point every Gradle entry's runtime_config at the JDK we actually installed.
+
+    veecli ships tools-config.json with each GradleProvider entry bound to
+    runtime_config java-jdk-17.0.18, but we only install the requested JDK. With
+    that runtime missing veecli logs "gradle could not be initialized from the
+    specified tool provider configuration" and falls back to whatever gradle is
+    on the runner's PATH (observed: /usr/share/gradle-9.8.1, which broke
+    `gradle properties` on a project using name.remal.sonarlint and left the
+    SBOM with zero resolved components). Must run after patch_runtimes_config,
+    which repoints the runtime entry's path at the installed dir.
+    """
+    veecli_dir = Path(veecli_path).parent
+    tools_path = veecli_dir / "third_party" / "tools-config.json"
+    runtimes_path = veecli_dir / "third_party" / "runtimes-config.json"
+    linux_dir = veecli_dir / "third_party" / "linux"
+
+    if not tools_path.exists() or not runtimes_path.exists():
+        log("warn", "tools-config.json/runtimes-config.json not found — skipping Gradle patch")
+        return
+
+    installed = sorted(
+        d.name for d in linux_dir.iterdir()
+        if d.is_dir() and re.match(rf"openjdk-{java_major}[\._]", d.name)
+    ) if linux_dir.exists() else []
+    if not installed:
+        log("warn", f"No installed JDK found for Java {java_major} — skipping Gradle patch")
+        return
+
+    with runtimes_path.open() as f:
+        runtimes = json.load(f)
+    runtime = next(
+        (r for r in runtimes.get("runtimes", [])
+         if r.get("provider") == "JavaRuntimeProvider"
+         and r.get("path", "").endswith(f"/{installed[0]}")),
+        None,
+    )
+    if not runtime:
+        log("warn", f"No runtimes-config.json entry for {installed[0]} — skipping Gradle patch")
+        return
+
+    with tools_path.open() as f:
+        cfg = json.load(f)
+
+    runtime_config = {
+        "name": runtime["name"],
+        "version": runtime["version"],
+        "platform": runtime.get("platform", "linux"),
+    }
+    tools = cfg.get("tools", [])
+    gradle_entries = [t for t in tools if t.get("provider") == "GradleProvider"]
+
+    # veecli's bundled config skips some versions we install (e.g. 8.5). Register
+    # them, else a project pinned to that version has no matching tool entry.
+    known = {e.get("version") for e in gradle_entries}
+    if gradle_entries:
+        for gv in GRADLE_VERSIONS:
+            if gv in known:
+                continue
+            added = dict(gradle_entries[0])
+            added["version"] = gv
+            added["path"] = f"third_party/linux/gradle-{gv}/bin/gradle"
+            tools.append(added)
+            gradle_entries.append(added)
+            log("info", f"tools-config.json: added missing Gradle {gv} entry")
+
+    patched = 0
+    for entry in gradle_entries:
+        entry["runtime_config"] = dict(runtime_config)
+        patched += 1
+
+    with tools_path.open("w") as f:
+        json.dump(cfg, f, indent=4)
+
+    log("info", f"tools-config.json: {patched} Gradle entr{'y' if patched == 1 else 'ies'} "
+                f"now use runtime {runtime['name']}")
 
 
 def patch_runtimes_config_python(veecli_path: str, python_minor: str):
@@ -2193,6 +2271,7 @@ def main():
             setup_java_runtime(args.language_version)
             patch_runtimes_config(args.veecli, args.language_version)
             patch_tools_config_maven(args.veecli)
+            patch_tools_config_gradle(args.veecli, args.language_version)
         elif args.language == "python":
             setup_python_runtime(args.language_version)
             patch_runtimes_config_python(args.veecli, args.language_version)
