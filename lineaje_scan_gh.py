@@ -2081,13 +2081,16 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
 
         write_raw_fix_plan(fix_data, output_dir=output_dir)
 
-        if gos and not connect_to_fortknox:
+        # Go is curated-only: it never connects to Fortknox, so a Lineaje-rebuilt
+        # candidate can never resolve there regardless of connect_to_fortknox.
+        go_curated_only = gos and language == "golang"
+        if gos and (not connect_to_fortknox or go_curated_only):
             excluded = [p for p in plan_details if "-lineaje-" in p.get("suggested_purl", "")]
             if excluded:
                 plan_details = [p for p in plan_details if "-lineaje-" not in p.get("suggested_purl", "")]
                 fix_data.setdefault("meta_data", {})["plan_details"] = plan_details
                 cves = sorted({c for p in excluded for c in p.get("vuln_fixed", [])})
-                log("warn", f"connect_to_fortknox=false: dropped {len(excluded)} Fortknox-only fix "
+                log("warn", f"{'Go is curated-only' if go_curated_only else 'connect_to_fortknox=false'}: dropped {len(excluded)} Fortknox-only fix "
                             f"candidate(s) before submitting — affected CVEs: {', '.join(cves)}")
 
         if overall_status == "available" and not plan_details:

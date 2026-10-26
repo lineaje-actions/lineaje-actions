@@ -713,16 +713,17 @@ case "$LANGUAGE" in
         fi
         ;;
     go|golang)
-        # No GOS/Fortknox proxy for Go modules exists yet — always the public
-        # proxy, regardless of --connect-to-fortknox. Revisit once one exists
-        # (mirror the java/node case: a registry URL plus credentials wired
-        # through _gos_premium_env).
-        if [[ "$CONNECT_TO_FORTKNOX" = "true" ]]; then
-            log_info "connect_to_fortknox=true requested, but no GOS premium Go proxy is configured yet — using the public Go proxy only"
-        else
-            log_info "connect_to_fortknox=false — using the public Go proxy only (same as today's default; no-op for Go)"
-        fi
+        # Go is curated-only: the action never connects Go to Fortknox, and
+        # _run_fix_plan drops any -lineaje-N plan entry for Go before submitting
+        # it. So the public proxy is the only source, regardless of
+        # --connect-to-fortknox.
+        log_info "Go is curated-only — resolving modules from the public Go proxy"
         GOPROXY_VALUE="https://proxy.golang.org,direct"
+        # A bump can raise go.mod's `go` directive. With the default
+        # GOTOOLCHAIN=auto Go would silently download a newer toolchain and the
+        # check would pass on a Go version the repo is not configured for; local
+        # makes such a bump fail here, which is the correct rejection.
+        export GOTOOLCHAIN=local
 
         # Same reasoning as the Maven repo cache: a fresh GOMODCACHE/GOCACHE per
         # invocation means every patched module re-downloads the same shared
@@ -743,11 +744,24 @@ case "$LANGUAGE" in
 
         reconstruct_build_root
 
-        log_info "Searching recursively for go.mod under ${BUILD_ROOT}"
+        # Build only the modules whose go.mod the patch touched (--task-dir holds
+        # just those files); the rest of the tree is in BUILD_ROOT purely so
+        # `replace` targets and sibling modules resolve. Building every go.mod
+        # would let an unrelated nested module that was already broken block a
+        # good patch. Falls back to every go.mod when the task dir has none.
+        log_info "Searching for patched go.mod under ${REPO_ROOT}"
         GO_MOD_FILES=()
         while IFS= read -r file; do
-            GO_MOD_FILES+=("$file")
-        done < <(find "${BUILD_ROOT}" -type f -name "go.mod" -not -path "*/vendor/*" 2>/dev/null)
+            rel="${file#"${REPO_ROOT}"/}"
+            [[ -f "${BUILD_ROOT}/${rel}" ]] && GO_MOD_FILES+=("${BUILD_ROOT}/${rel}")
+        done < <(find "${REPO_ROOT}" -type f -name "go.mod" -not -path "*/vendor/*" 2>/dev/null)
+
+        if [[ "${#GO_MOD_FILES[@]}" -eq 0 ]]; then
+            log_info "No go.mod in the task dir — falling back to every go.mod under ${BUILD_ROOT}"
+            while IFS= read -r file; do
+                GO_MOD_FILES+=("$file")
+            done < <(find "${BUILD_ROOT}" -type f -name "go.mod" -not -path "*/vendor/*" 2>/dev/null)
+        fi
 
         if [[ "${#GO_MOD_FILES[@]}" -eq 0 ]]; then
             log_info "No go.mod found."
@@ -785,12 +799,31 @@ case "$LANGUAGE" in
                     continue
                 fi
 
-                # A vendor/ directory implies -mod=vendor: no network call at
-                # all, so GOPROXY/the lack of a GOS proxy is moot for this module.
-                VENDOR_ARGS=()
+                # The patch ships go.mod only: go.sum and vendor/ are not updated.
+                # So build in module mode (-mod=mod), which lets go add the new
+                # versions' go.sum entries itself, instead of failing with
+                # "missing go.sum entry". A vendor/ directory is ignored for the
+                # same reason — -mod=vendor would fail with "inconsistent
+                # vendoring" against the unpatched vendor/modules.txt on every
+                # bump. The repo has to re-vendor after applying the patch.
+                VENDOR_ARGS=(-mod=mod)
                 if [[ -d "${mod_dir}/vendor" ]]; then
-                    VENDOR_ARGS=(-mod=vendor)
-                    log_info "vendor/ directory detected — building in vendor mode (no network)"
+                    log_info "vendor/ directory ignored — verifying in module mode against the public proxy (re-run go mod vendor after applying the patch)"
+                fi
+
+                # -mod=mod can rewrite go.mod/go.sum. When BUILD_ROOT is a
+                # reconstructed copy that is harmless, but without --repo-root it
+                # is the task dir itself — the very go.mod veecli copies on
+                # success — so put it back afterwards.
+                RESTORE_GOMOD=0
+                if [[ "$BUILD_ROOT" == "$REPO_ROOT" ]]; then
+                    RESTORE_GOMOD=1
+                    cp -p "${gomod}" "${WORKDIR}/go.mod.orig"
+                    GOSUM_EXISTED=0
+                    if [[ -f "${mod_dir}/go.sum" ]]; then
+                        GOSUM_EXISTED=1
+                        cp -p "${mod_dir}/go.sum" "${WORKDIR}/go.sum.orig"
+                    fi
                 fi
 
                 # go build only ever writes an output file into mod_dir itself
@@ -817,6 +850,15 @@ case "$LANGUAGE" in
                 else
                     log_error "go build FAILED for ${gomod} (see output above)"
                     ANY_INSTALL_FAILED=1
+                fi
+
+                if [[ "$RESTORE_GOMOD" -eq 1 ]]; then
+                    cp -p "${WORKDIR}/go.mod.orig" "${gomod}"
+                    if [[ "$GOSUM_EXISTED" -eq 1 ]]; then
+                        cp -p "${WORKDIR}/go.sum.orig" "${mod_dir}/go.sum"
+                    else
+                        rm -f "${mod_dir}/go.sum"
+                    fi
                 fi
 
                 while IFS= read -r built_file; do
