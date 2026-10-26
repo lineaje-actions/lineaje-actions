@@ -1,5 +1,10 @@
 # Lineaje Scan Action
 
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Lineaje%20Scan-2ea44f?logo=github)](https://github.com/marketplace/actions/lineaje-scan)
+[![Tests](https://github.com/lineaje-actions/lineaje-actions/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/lineaje-actions/lineaje-actions/actions/workflows/tests.yml)
+[![Latest release](https://img.shields.io/github/v/release/lineaje-actions/lineaje-actions)](https://github.com/lineaje-actions/lineaje-actions/releases/latest)
+[![License](https://img.shields.io/github/license/lineaje-actions/lineaje-actions)](LICENSE)
+
 Scan container images and source repositories for vulnerabilities directly in GitHub Actions using [Lineaje](https://www.lineaje.com/).
 
 The action installs the required scanner and language runtime, submits the scan, waits for analysis, and prints an Exploited, Critical, and High vulnerability summary in the job log. Optional post-scan modes can also generate patched artifacts:
@@ -35,6 +40,7 @@ Linux runners are required. For image scans, rebuild from the patched Dockerfile
 - [Registry authentication](#registry-authentication)
 - [Supported language versions](#supported-language-versions)
 - [Caching](#caching)
+- [Testing](#testing)
 - [Versioning & pinning](#versioning--pinning)
 
 ---
@@ -636,6 +642,24 @@ Pass a `rustup`-resolvable toolchain version via `language_version` (e.g. `1.75.
 ## Caching
 
 Language runtimes are cached per `language` + `language_version` via `actions/cache`. On a cache hit the download is skipped entirely, cutting setup time to seconds.
+
+---
+
+## Testing
+
+The pull-request test workflow is credential-free. It covers the Python polling and fix-plan state machines, template and credential-file generation, action input hardening, and the dependency verifier with fake package-manager executables.
+
+Run it locally with:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest -q
+shellcheck lineaje-verify.sh
+```
+
+Full scans require a real `veecli` binary and Lineaje token. Use the **Lineaje Scan** manual workflow for live image, source, and fix-plan smoke tests; live credentials are never exposed to pull-request jobs.
 
 ---
 

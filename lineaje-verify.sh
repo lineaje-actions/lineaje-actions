@@ -165,6 +165,8 @@ JAVA_PROJECT_DIRS=()
 DOTNET_PROJECT_DIRS=()
 GRADLE_PROJECT_DIRS=()
 
+# Called indirectly by the EXIT trap below.
+# shellcheck disable=SC2317
 cleanup_verify_artifacts() {
     # The "${ARR[@]+"${ARR[@]}"}" form (rather than plain "${ARR[@]}") avoids an
     # "unbound variable" error under `set -u` when the array is empty on bash
@@ -456,6 +458,7 @@ case "$LANGUAGE" in
                 # A pom using ${revision} with no default property fails to resolve
                 # on its own; supply a dummy value just to let resolve/compile run.
                 REVISION_ARGS=()
+                # shellcheck disable=SC2016 # ${revision} must remain literal for grep.
                 if grep -q '\${revision}' "$pom" 2>/dev/null && ! grep -q '<revision>' "$pom" 2>/dev/null; then
                     REVISION_ARGS=(-Drevision=0.0.0-SNAPSHOT)
                     log_info "pom uses \${revision} with no default — passing -Drevision=0.0.0-SNAPSHOT"
@@ -849,6 +852,12 @@ case "$LANGUAGE" in
                     log_info "go build succeeded for ${gomod}"
                 else
                     log_error "go build FAILED for ${gomod} (see output above)"
+                    MISSING_STDLIB_PACKAGES="$(sed -nE 's#.*package ([^[:space:]]+) is not in GOROOT.*#\1#p' "$go_log" | sort -u | paste -sd ', ' -)"
+                    if [[ -n "$MISSING_STDLIB_PACKAGES" ]]; then
+                        GO_VERSION_OUTPUT="$("${GO_CMD}" version 2>/dev/null || true)"
+                        log_error "Patched dependencies require standard-library package(s) unavailable in the pinned toolchain (${GO_VERSION_OUTPUT:-unknown Go version}): ${MISSING_STDLIB_PACKAGES}"
+                        log_error "This candidate is not compatible with the requested Go version. Raise the action's language_version, or use a dependency fix that supports the current toolchain."
+                    fi
                     ANY_INSTALL_FAILED=1
                 fi
 

@@ -168,23 +168,27 @@ runs:
     - name: Validate image scan inputs
       if: inputs.scan_type == 'image'
       shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        METAFILES: ${{ inputs.metafiles }}
+        POST_SCAN: ${{ inputs.post_scan }}
       run: |
-        if [ -z "${{ inputs.image }}" ]; then
+        if [ -z "$IMAGE" ]; then
           echo "[error] 'image' input is required for image scan"
           exit 1
         fi
-        if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ]; then
+        if [ "$POST_SCAN" = "fix_plan_gos_compat" ]; then
           echo "[error] post_scan=fix_plan_gos_compat is only supported for source scans"
           echo "         (veecli fix patches dependency manifests in a checked-out repo)"
           exit 1
         fi
-        if [ "${{ inputs.post_scan }}" != "scan_only" ]; then
-          if [ -z "${{ inputs.metafiles }}" ]; then
-            echo "[error] 'metafiles' input is required for image scan with post_scan=${{ inputs.post_scan }} (path to Dockerfile)"
+        if [ "$POST_SCAN" != "scan_only" ]; then
+          if [ -z "$METAFILES" ]; then
+            echo "[error] 'metafiles' input is required for image scan with post_scan=$POST_SCAN (path to Dockerfile)"
             exit 1
           fi
-          if [ ! -f "${{ inputs.metafiles }}" ]; then
-            echo "[error] metafiles not found: ${{ inputs.metafiles }}"
+          if [ ! -f "$METAFILES" ]; then
+            echo "[error] metafiles not found: $METAFILES"
             exit 1
           fi
         fi
@@ -192,32 +196,36 @@ runs:
         # Set here too (not just in step 1b) so downstream steps never need a
         # ${POST_SCAN_EFFECTIVE:-...} fallback — image scans have no per-language
         # downgrade, so this is always the input value verbatim.
-        echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
+        echo "POST_SCAN_EFFECTIVE=$POST_SCAN" >> "$GITHUB_ENV"
 
     # ── 1b. Validate source scan inputs ───────────────────────────────────────
     - name: Validate source scan inputs
       if: inputs.scan_type == 'source'
       shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+        LANGUAGE_VERSION: ${{ inputs.language_version }}
+        POST_SCAN: ${{ inputs.post_scan }}
       run: |
-        if [ -z "${{ inputs.language }}" ]; then
+        if [ -z "$LANGUAGE" ]; then
           echo "[error] 'language' input is required for source scan (java | python | node | dotnet | golang | rust)"
           exit 1
         fi
-        if [ -z "${{ inputs.language_version }}" ]; then
+        if [ -z "$LANGUAGE_VERSION" ]; then
           echo "[error] 'language_version' input is required for source scan"
           exit 1
         fi
-        if [ "${{ inputs.post_scan }}" = "fix_plan_gos_compat" ] \
-          && [ "${{ inputs.language }}" != "python" ] \
-          && [ "${{ inputs.language }}" != "node" ] \
-          && [ "${{ inputs.language }}" != "java" ] \
-          && [ "${{ inputs.language }}" != "dotnet" ] \
-          && [ "${{ inputs.language }}" != "golang" ]; then
+        if [ "$POST_SCAN" = "fix_plan_gos_compat" ] \
+          && [ "$LANGUAGE" != "python" ] \
+          && [ "$LANGUAGE" != "node" ] \
+          && [ "$LANGUAGE" != "java" ] \
+          && [ "$LANGUAGE" != "dotnet" ] \
+          && [ "$LANGUAGE" != "golang" ]; then
           echo "[error] post_scan=fix_plan_gos_compat is only supported for Python, Node.js, Java, .NET and Go source scans"
           exit 1
         fi
 
-        echo "POST_SCAN_EFFECTIVE=${{ inputs.post_scan }}" >> "$GITHUB_ENV"
+        echo "POST_SCAN_EFFECTIVE=$POST_SCAN" >> "$GITHUB_ENV"
 
     # ── 2. Download and extract veecli ────────────────────────────────────────
     - name: Download and extract veecli
@@ -325,6 +333,8 @@ runs:
     - name: Install rust
       if: inputs.scan_type == 'source' && inputs.language == 'rust' && env.VEECLI_ALREADY_SETUP != 'true'
       shell: bash
+      env:
+        LANGUAGE_VERSION: ${{ inputs.language_version }}
       run: |
         pushd /opt/veecli > /dev/null
         export RUSTUP_HOME=/opt/veecli/third_party/linux/rustup
@@ -334,8 +344,8 @@ runs:
         bash rust.sh -y -q --default-toolchain none > /dev/null 2>&1
         rm rust.sh
 
-        "$CARGO_HOME/bin/rustup" toolchain install "${{ inputs.language_version }}" --profile minimal
-        "$CARGO_HOME/bin/rustup" default "${{ inputs.language_version }}"
+        "$CARGO_HOME/bin/rustup" toolchain install "$LANGUAGE_VERSION" --profile minimal
+        "$CARGO_HOME/bin/rustup" default "$LANGUAGE_VERSION"
 
         "$CARGO_HOME/bin/cargo" install -q --root "$CARGO_HOME" cargo-lock --features=cli
 
@@ -447,14 +457,18 @@ runs:
     - name: Pull image
       if: inputs.scan_type == 'image' && inputs.image_source_type == 'registry'
       shell: bash
-      run: docker pull "${{ inputs.image }}"
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: docker pull "$IMAGE"
 
     # ── 8. Resolve source directory ───────────────────────────────────────────
     - name: Resolve source directory
       if: inputs.scan_type == 'source'
       shell: bash
+      env:
+        SOURCE_DIR_INPUT: ${{ inputs.source_dir }}
       run: |
-        SOURCE_DIR="${{ inputs.source_dir }}"
+        SOURCE_DIR="$SOURCE_DIR_INPUT"
         if [ ! -d "$SOURCE_DIR" ]; then
           echo "[error] Source directory not found: $SOURCE_DIR"
           exit 1
@@ -478,42 +492,85 @@ runs:
     - name: Install Python dependencies
       if: env.VEECLI_ALREADY_SETUP != 'true'
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        python3 -m venv "${{ github.action_path }}/.venv"
-        source "${{ github.action_path }}/.venv/bin/activate"
+        python3 -m venv "$ACTION_PATH/.venv"
+        source "$ACTION_PATH/.venv/bin/activate"
         pip install --quiet requests
         echo "LINEAJE_ACTION_SETUP_COMPLETE=true" >> "$GITHUB_ENV"
 
     # ── 10. Resolve dynamic env vars ─────────────────────────────────────────
     - name: Set scan env vars
       shell: bash
+      env:
+        MATCHING_REF_INPUT: ${{ inputs.matching_ref || github.head_ref || github.ref_name }}
+        OUTPUT_DIR_INPUT: ${{ inputs.output_dir }}
+        PROJECT_NAME_INPUT: ${{ inputs.project_name || github.event.repository.name }}
+        PROJECT_VERSION_INPUT: ${{ inputs.project_version }}
+        REPOSITORY: ${{ github.repository }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        RUN_NUMBER: ${{ github.run_number }}
+        SCAN_TYPE: ${{ inputs.scan_type }}
+        SERVER_URL: ${{ github.server_url }}
+        VERSION_PREFIX: ${{ inputs.version_prefix }}
       run: |
-        echo "PROJECT_NAME=${{ inputs.project_name || github.event.repository.name }}" >> "$GITHUB_ENV"
-        if [ -n "${{ inputs.project_version }}" ]; then
-          echo "PROJECT_VERSION=${{ inputs.project_version }}" >> "$GITHUB_ENV"
+        write_env() {
+          local name="$1" value="$2" delimiter
+          delimiter="LINEAJE_$(uuidgen | tr -d '-')"
+          while grep -Fqx "$delimiter" <<< "$value"; do
+            delimiter="LINEAJE_$(uuidgen | tr -d '-')"
+          done
+          {
+            printf '%s<<%s\n' "$name" "$delimiter"
+            printf '%s\n' "$value"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_ENV"
+        }
+
+        write_env PROJECT_NAME "$PROJECT_NAME_INPUT"
+        if [ -n "$PROJECT_VERSION_INPUT" ]; then
+          write_env PROJECT_VERSION "$PROJECT_VERSION_INPUT"
         else
-          PREFIX="${{ inputs.version_prefix }}"
-          BASE="${{ inputs.scan_type }}-${{ github.run_number }}-${{ github.run_attempt }}"
+          BASE="$SCAN_TYPE-$RUN_NUMBER-$RUN_ATTEMPT"
           SUFFIX=""
           [ "$VEECLI_ALREADY_SETUP" = "true" ] && SUFFIX="-patched"
-          if [ -n "$PREFIX" ]; then
-            echo "PROJECT_VERSION=${PREFIX}-${BASE}${SUFFIX}" >> "$GITHUB_ENV"
+          if [ -n "$VERSION_PREFIX" ]; then
+            write_env PROJECT_VERSION "$VERSION_PREFIX-$BASE$SUFFIX"
           else
-            echo "PROJECT_VERSION=${BASE}${SUFFIX}" >> "$GITHUB_ENV"
+            write_env PROJECT_VERSION "$BASE$SUFFIX"
           fi
         fi
-        echo "SRC_URL=${{ github.server_url }}/${{ github.repository }}" >> "$GITHUB_ENV"
-        echo "MATCHING_REF=${{ inputs.matching_ref || github.head_ref || github.ref_name }}" >> "$GITHUB_ENV"
-        echo "OUTPUT_DIR=${{ inputs.output_dir }}" >> "$GITHUB_ENV"
-        echo "OUTPUT_FIX_DIR=${{ inputs.output_dir }}/fix" >> "$GITHUB_ENV"
+        write_env SRC_URL "$SERVER_URL/$REPOSITORY"
+        write_env MATCHING_REF "$MATCHING_REF_INPUT"
+        write_env OUTPUT_DIR "$OUTPUT_DIR_INPUT"
+        write_env OUTPUT_FIX_DIR "$OUTPUT_DIR_INPUT/fix"
 
     # ── 11. Run Lineaje scan ──────────────────────────────────────────────────
     - name: Lineaje scan
       id: lineaje_scan
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONNECT_TO_FORTKNOX: ${{ inputs.connect_to_fortknox }}
+        DATA_SERVICE_URL: ${{ inputs.data_service_url }}
+        FAST_SCAN: ${{ inputs.fast_scan }}
+        GOS_MODE: ${{ inputs.gos_mode }}
+        GPT_SERVICE_URL: ${{ inputs.gpt_service_url }}
+        IDENTITY_URL: ${{ inputs.identity_url }}
+        IMAGE: ${{ inputs.image }}
+        IMAGE_SOURCE_TYPE: ${{ inputs.image_source_type }}
+        LANGUAGE: ${{ inputs.language }}
+        LANGUAGE_VERSION: ${{ inputs.language_version }}
+        METAFILES: ${{ inputs.metafiles }}
+        NO_LOOKUP: ${{ inputs.no_lookup }}
+        NOTIFICATION_URL: ${{ inputs.notification_url }}
+        ORG_NAME: ${{ inputs.org_name }}
         REFRESH_TOKEN: ${{ inputs.lineaje_cli_token }}
         PIP_EXTRA_INDEX_URL: ${{ inputs.pip_extra_index_url }}
+        SCAN_TYPE: ${{ inputs.scan_type }}
+        SCIM_URL: ${{ inputs.scim_url }}
+        SCM_URL: ${{ inputs.scm_url }}
       run: |
         if [ -z "$REFRESH_TOKEN" ]; then
           echo "[error] lineaje_cli_token input is required"
@@ -523,11 +580,11 @@ runs:
         # Both validation steps set POST_SCAN_EFFECTIVE (image and source scans
         # between them), so an empty value here means scan_type was neither.
         if [ -z "$POST_SCAN_EFFECTIVE" ]; then
-          echo "[error] invalid scan_type: '${{ inputs.scan_type }}' (expected image | source)"
+          echo "[error] invalid scan_type: '$SCAN_TYPE' (expected image | source)"
           exit 1
         fi
 
-        source "${{ github.action_path }}/.venv/bin/activate"
+        source "$ACTION_PATH/.venv/bin/activate"
 
         SCAN_ARGS=(
           --name          "$PROJECT_NAME"
@@ -537,32 +594,32 @@ runs:
           --veecli        "$VEECLI_PATH"
           --output-dir    "$OUTPUT_DIR"
         )
-        SCAN_ARGS+=(--org-name "${{ inputs.org_name }}")
+        SCAN_ARGS+=(--org-name "$ORG_NAME")
 
         # Service endpoint overrides — only forwarded when set, so an unset input
         # leaves the config-orig.json value untouched. These are baked into
         # config.json by build_config because veecli reads several of them itself.
-        [ -n "${{ inputs.identity_url }}" ]     && SCAN_ARGS+=(--auth-service      "${{ inputs.identity_url }}")
-        [ -n "${{ inputs.scim_url }}" ]         && SCAN_ARGS+=(--scim-host         "${{ inputs.scim_url }}")
-        [ -n "${{ inputs.scm_url }}" ]          && SCAN_ARGS+=(--scm-host          "${{ inputs.scm_url }}")
-        [ -n "${{ inputs.notification_url }}" ] && SCAN_ARGS+=(--notification-host "${{ inputs.notification_url }}")
-        [ -n "${{ inputs.data_service_url }}" ] && SCAN_ARGS+=(--data-host         "${{ inputs.data_service_url }}")
-        [ -n "${{ inputs.gpt_service_url }}" ]  && SCAN_ARGS+=(--gpt-host          "${{ inputs.gpt_service_url }}")
+        [ -n "$IDENTITY_URL" ]     && SCAN_ARGS+=(--auth-service      "$IDENTITY_URL")
+        [ -n "$SCIM_URL" ]         && SCAN_ARGS+=(--scim-host         "$SCIM_URL")
+        [ -n "$SCM_URL" ]          && SCAN_ARGS+=(--scm-host          "$SCM_URL")
+        [ -n "$NOTIFICATION_URL" ] && SCAN_ARGS+=(--notification-host "$NOTIFICATION_URL")
+        [ -n "$DATA_SERVICE_URL" ] && SCAN_ARGS+=(--data-host         "$DATA_SERVICE_URL")
+        [ -n "$GPT_SERVICE_URL" ]  && SCAN_ARGS+=(--gpt-host          "$GPT_SERVICE_URL")
         [ "$VEECLI_ALREADY_SETUP" = "true" ] && SCAN_ARGS+=(--reuse-config)
 
-        if [ "${{ inputs.scan_type }}" = "image" ]; then
+        if [ "$SCAN_TYPE" = "image" ]; then
           SCAN_ARGS+=(
-            --image             "${{ inputs.image }}"
-            --metafiles         "${{ inputs.metafiles }}"
-            --image-source-type "${{ inputs.image_source_type }}"
+            --image             "$IMAGE"
+            --metafiles         "$METAFILES"
+            --image-source-type "$IMAGE_SOURCE_TYPE"
           )
         else
           SCAN_ARGS+=(
             --src-folder       "$SOURCE_FOLDER"
             --src-url          "$SRC_URL"
             --matching-ref     "$MATCHING_REF"
-            --language         "${{ inputs.language }}"
-            --language-version "${{ inputs.language_version }}"
+            --language         "$LANGUAGE"
+            --language-version "$LANGUAGE_VERSION"
           )
         fi
 
@@ -575,27 +632,27 @@ runs:
           SCAN_ARGS+=(--skip-fix-plan)
         elif [ "$EFFECTIVE" = "fix_plan_gos_compat" ]; then
           SCAN_ARGS+=(--gos-fix-plan --output-fix-dir "$OUTPUT_FIX_DIR")
-          if [ "${{ inputs.connect_to_fortknox }}" = "false" ]; then
+          if [ "$CONNECT_TO_FORTKNOX" = "false" ]; then
             SCAN_ARGS+=(--no-connect-to-fortknox)
           fi
         fi
 
-        if [ "${{ inputs.fast_scan }}" = "true" ]; then
+        if [ "$FAST_SCAN" = "true" ]; then
           SCAN_ARGS+=(--fast-scan)
         fi
 
-        if [ "${{ inputs.no_lookup }}" = "true" ]; then
+        if [ "$NO_LOOKUP" = "true" ]; then
           SCAN_ARGS+=(--no-lookup)
         fi
 
-        SCAN_ARGS+=(--gos-mode "${{ inputs.gos_mode }}")
+        SCAN_ARGS+=(--gos-mode "$GOS_MODE")
 
         # Merge stdout+stderr before relaying complete lines to both the console and
         # the scan log. Unlike tee's arbitrary byte chunks, this keeps each GitHub
         # Actions log record intact. PIPESTATUS[0] preserves the Python exit code.
         SCAN_LOG="/tmp/lineaje-scan.log"
         : > "$SCAN_LOG"
-        python3 -u "${{ github.action_path }}/lineaje_scan_gh.py" "${SCAN_ARGS[@]}" 2>&1 |
+        python3 -u "$ACTION_PATH/lineaje_scan_gh.py" "${SCAN_ARGS[@]}" 2>&1 |
           while IFS= read -r line || [ -n "$line" ]; do
             printf '%s\n' "$line"
             printf '%s\n' "$line" >> "$SCAN_LOG"
@@ -612,7 +669,7 @@ runs:
             ARTIFACT_FOUND=true
           fi
         elif [ "$EFFECTIVE" != "scan_only" ]; then
-          if [ "${{ inputs.scan_type }}" = "image" ]; then
+          if [ "$SCAN_TYPE" = "image" ]; then
             PATCHED_DOCKERFILE=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'Dockerfile*' | head -1)
             [ -n "$PATCHED_DOCKERFILE" ] && ARTIFACT_FOUND=true
           else
