@@ -165,8 +165,9 @@ JAVA_PROJECT_DIRS=()
 DOTNET_PROJECT_DIRS=()
 GRADLE_PROJECT_DIRS=()
 
-# Called indirectly by the EXIT trap below.
-# shellcheck disable=SC2317
+# Called indirectly by the EXIT trap below. SC2317 is the older ShellCheck's
+# "unreachable command" wording, SC2329 the newer "function is never invoked".
+# shellcheck disable=SC2317,SC2329
 cleanup_verify_artifacts() {
     # The "${ARR[@]+"${ARR[@]}"}" form (rather than plain "${ARR[@]}") avoids an
     # "unbound variable" error under `set -u` when the array is empty on bash
@@ -699,13 +700,24 @@ case "$LANGUAGE" in
                 # patched version bump legitimately disagrees with an existing
                 # packages.lock.json, which would otherwise reject every patch
                 # (NU1004) for a project that opts in to locked restores.
+                #
+                # TreatWarningsAsErrors is forced off too: a project that sets it
+                # to true turns NuGet restore warnings (NU1901-NU1904 audit
+                # advisories, NU1603/NU1608 resolution notes, ...) into errors,
+                # which would reject a patch this check only needs to prove
+                # installable. A command-line global property overrides the
+                # project's and Directory.Build.props values. Only `dotnet
+                # restore` runs here; any other dotnet command added later (build,
+                # list package, ...) restores implicitly and needs this same
+                # property, or --no-restore.
                 dotnet_log="${WORKDIR}/dotnet_restore.log"
                 : > "$dotnet_log"
                 log_info "Running: dotnet restore ${proj}"
                 if dotnet restore "${proj}" \
                         "${NUGET_ARGS[@]}" \
                         --packages "${NUGET_PACKAGES_DIR}" \
-                        -p:RestoreLockedMode=false >"$dotnet_log" 2>&1; then
+                        -p:RestoreLockedMode=false \
+                        -p:TreatWarningsAsErrors=false >"$dotnet_log" 2>&1; then
                     log_info "dotnet restore succeeded for ${proj}"
                 else
                     log_error "dotnet restore FAILED for ${proj}. Redacted output follows:"

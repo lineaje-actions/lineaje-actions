@@ -106,3 +106,66 @@ def test_go_verifier_explains_newer_standard_library_requirement(verifier, tmp_p
     assert "unavailable in the pinned toolchain" in result.stdout
     assert "crypto/ecdh" in result.stdout
     assert "Raise the action's language_version" in result.stdout
+
+def run_dotnet_verifier(verifier, tmp_path, *, fail_restore=False):
+    script, fake_bin = verifier
+    dotnet = fake_bin / "dotnet"
+    dotnet.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOTNET_CALL_LOG\"\n"
+        "if [[ \"${FAIL_DOTNET_RESTORE:-false}\" = true ]]; then exit 1; fi\n"
+        "exit 0\n"
+    )
+    dotnet.chmod(0o755)
+
+    project = tmp_path / "dotnet-project"
+    project.mkdir()
+    (project / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />\n')
+    call_log = tmp_path / "dotnet-calls.log"
+    env = {
+        **os.environ,
+        "FAIL_DOTNET_RESTORE": str(fail_restore).lower(),
+        "DOTNET_CALL_LOG": str(call_log),
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        [
+            "bash", str(script), "--task-dir", str(project), "--language", "dotnet",
+            "--connect-to-fortknox", "false",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, call_log.read_text()
+
+
+def test_dotnet_verifier_restores_with_warnings_not_treated_as_errors(verifier, tmp_path):
+    result, calls = run_dotnet_verifier(verifier, tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    restore_calls = [line for line in calls.splitlines() if line.startswith("restore ")]
+    assert len(restore_calls) == 1
+    # A project with TreatWarningsAsErrors=true must not turn NuGet restore
+    # warnings into failures, and a patched bump must not trip locked mode.
+    assert "-p:TreatWarningsAsErrors=false" in restore_calls[0]
+    assert "-p:RestoreLockedMode=false" in restore_calls[0]
+    assert "--source https://api.nuget.org/v3/index.json" in restore_calls[0]
+    assert "All discovered manifest files were installed successfully" in result.stdout
+
+
+def test_dotnet_verifier_runs_only_restore(verifier, tmp_path):
+    _result, calls = run_dotnet_verifier(verifier, tmp_path)
+
+    # Any other dotnet command (build, list package, ...) restores implicitly and
+    # would need the same property or --no-restore.
+    assert all(line.startswith("restore ") for line in calls.splitlines())
+
+
+def test_dotnet_verifier_propagates_restore_failure(verifier, tmp_path):
+    result, _calls = run_dotnet_verifier(verifier, tmp_path, fail_restore=True)
+
+    assert result.returncode == 1
+    assert "dotnet restore FAILED" in result.stdout
+    assert "One or more dependency installations failed" in result.stdout
