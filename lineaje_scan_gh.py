@@ -148,6 +148,7 @@ GO_VERSIONS = {
     "1.24": "1.24.13",
     "1.25": "1.25.11",
     "1.26": "1.26.4",
+    "1.27": "1.27.3",
 }
 
 CYCLONEDX_GOMOD_VERSION = "1.10.0-3-lineaje"
@@ -1100,7 +1101,7 @@ def patch_runtimes_config_go(veecli_path: str, go_minor: str):
 
     veecli's bundled runtimes-config.json only contains entries for the Go versions
     that were available when the image was built (1.18, 1.21, 1.23, 1.25).
-    Requesting any other version (1.19, 1.20, 1.22, 1.24, 1.26) without this patch
+    Requesting any other version (1.19, 1.20, 1.22, 1.24, 1.26, 1.27) without this patch
     causes veecli to silently skip the Go runtime.
 
     go_minor: e.g. "1.22"

@@ -624,6 +624,7 @@ Pass the **minor version** via `language_version` (e.g. `1.21`). Both module-mod
 | `1.24` | 1.24.13 |
 | `1.25` | 1.25.11 |
 | `1.26` | 1.26.4 |
+| `1.27` | 1.27.3 |
 
 ### .NET
 

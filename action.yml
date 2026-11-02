@@ -70,7 +70,7 @@ inputs:
     required: false
     default: ''
   language_version:
-    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.18' | '1.19' | '1.20' | '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26', rust: e.g. '1.75.0' (a real rustup toolchain version)"
+    description: "[source] Version to install (required if language set). java: '17', python: '3.10', node: '18' | '20' | '22' | '24' | '26', dotnet: '8.0', golang: '1.18' | '1.19' | '1.20' | '1.21' | '1.22' | '1.23' | '1.24' | '1.25' | '1.26' | '1.27', rust: e.g. '1.75.0' (a real rustup toolchain version)"
     required: false
     default: ''
   matching_ref:
