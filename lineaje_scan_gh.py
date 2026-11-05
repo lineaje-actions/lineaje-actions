@@ -2174,8 +2174,6 @@ def main():
     parser.add_argument("--refresh-token", required=True, help="Lineaje refresh token")
     parser.add_argument("--config-orig",   required=True, help="Path to config-orig.json from veecli tarball")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Destination for generated config.json")
-    parser.add_argument("--reuse-config", action="store_true", default=False,
-                        help="Reuse an existing config.json created by an earlier invocation in the same job")
     parser.add_argument("--auth-service", default="", help="Identity service base URL (default: LineajeAuthService from config-orig.json)")
     parser.add_argument("--scim-host", default="", help="SCIM service base URL override (default: SCIMHost from config-orig.json)")
     parser.add_argument("--scm-host", default="", help="SCM service base URL override (default: SCMHost from config-orig.json)")
@@ -2288,20 +2286,17 @@ def main():
 
     # ── 1. Build config.json ───────────────────────────────────────────────────
     veecli_dir = Path(args.veecli).parent
-    if args.reuse_config and Path(args.config).exists():
-        log("info", "Reusing existing config.json (token already exchanged this job)")
-    else:
-        host_overrides = {
-            "LineajeAuthService": args.auth_service,
-            "SCIMHost": args.scim_host,
-            "GraphQLServiceHost": args.data_host,
-            "SCMHost": args.scm_host,
-            "NotificationServiceHost": args.notification_host,
-            "GPTServiceHost": args.gpt_host,
-        }
-        build_config(args.config_orig, args.refresh_token, args.config, host_overrides)
-        shutil.copy2(args.config, veecli_dir / "config.json")
-        log("info", f"Copied config.json to {veecli_dir}/config.json")
+    host_overrides = {
+        "LineajeAuthService": args.auth_service,
+        "SCIMHost": args.scim_host,
+        "GraphQLServiceHost": args.data_host,
+        "SCMHost": args.scm_host,
+        "NotificationServiceHost": args.notification_host,
+        "GPTServiceHost": args.gpt_host,
+    }
+    build_config(args.config_orig, args.refresh_token, args.config, host_overrides)
+    shutil.copy2(args.config, veecli_dir / "config.json")
+    log("info", f"Copied config.json to {veecli_dir}/config.json")
 
     if args.org_name:
         _cfg = load_config(args.config)

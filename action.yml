@@ -513,6 +513,7 @@ runs:
         RUN_NUMBER: ${{ github.run_number }}
         SCAN_TYPE: ${{ inputs.scan_type }}
         SERVER_URL: ${{ github.server_url }}
+        SOURCE_DIR_INPUT: ${{ inputs.source_dir || '.' }}
         VERSION_PREFIX: ${{ inputs.version_prefix }}
       run: |
         write_env() {
@@ -534,11 +535,23 @@ runs:
         else
           BASE="$SCAN_TYPE-$RUN_NUMBER-$RUN_ATTEMPT"
           SUFFIX=""
-          [ "$VEECLI_ALREADY_SETUP" = "true" ] && SUFFIX="-patched"
+          # For source scans with non-default source_dir, include sanitized path to prevent monorepo collisions
+          SOURCE_DIR_PART=""
+          if [ "$SCAN_TYPE" = "source" ] && [ "$SOURCE_DIR_INPUT" != "." ]; then
+            # Sanitize path: remove leading ./ and replace / with - for artifact names
+            SANITIZED_DIR=$(echo "$SOURCE_DIR_INPUT" | sed 's|^\./||' | tr '/' '-')
+            SOURCE_DIR_PART="-$SANITIZED_DIR"
+          fi
+          # Only mark as patched if veecli is reused AND this scan type appeared in history
+          if [ "$VEECLI_ALREADY_SETUP" = "true" ] && [ -f "$GITHUB_WORKSPACE/.lineaje_previous_scan_types" ]; then
+            PREV_TYPES=$(cat "$GITHUB_WORKSPACE/.lineaje_previous_scan_types")
+            # Check if this scan type appeared in the history (comma-separated list)
+            echo "$PREV_TYPES" | tr ',' '\n' | grep -q "^${SCAN_TYPE}$" && SUFFIX="-patched"
+          fi
           if [ -n "$VERSION_PREFIX" ]; then
-            write_env PROJECT_VERSION "$VERSION_PREFIX-$BASE$SUFFIX"
+            write_env PROJECT_VERSION "$VERSION_PREFIX-$BASE$SOURCE_DIR_PART$SUFFIX"
           else
-            write_env PROJECT_VERSION "$BASE$SUFFIX"
+            write_env PROJECT_VERSION "$BASE$SOURCE_DIR_PART$SUFFIX"
           fi
         fi
         write_env SRC_URL "$SERVER_URL/$REPOSITORY"
@@ -605,7 +618,6 @@ runs:
         [ -n "$NOTIFICATION_URL" ] && SCAN_ARGS+=(--notification-host "$NOTIFICATION_URL")
         [ -n "$DATA_SERVICE_URL" ] && SCAN_ARGS+=(--data-host         "$DATA_SERVICE_URL")
         [ -n "$GPT_SERVICE_URL" ]  && SCAN_ARGS+=(--gpt-host          "$GPT_SERVICE_URL")
-        [ "$VEECLI_ALREADY_SETUP" = "true" ] && SCAN_ARGS+=(--reuse-config)
 
         if [ "$SCAN_TYPE" = "image" ]; then
           SCAN_ARGS+=(
@@ -701,6 +713,19 @@ runs:
 
         [ "$SCAN_EXIT" -eq 0 ] || exit "$SCAN_EXIT"
 
+    # ── 11b. Save scan type for next invocation (multi-scan detection) ────────
+    - name: Record scan type for next invocation
+      shell: bash
+      env:
+        SCAN_TYPE: ${{ inputs.scan_type }}
+      run: |
+        HISTORY_FILE="$GITHUB_WORKSPACE/.lineaje_previous_scan_types"
+        if [ -f "$HISTORY_FILE" ]; then
+          echo "$(cat "$HISTORY_FILE"),$SCAN_TYPE" > "$HISTORY_FILE"
+        else
+          echo "$SCAN_TYPE" > "$HISTORY_FILE"
+        fi
+
     # ── 12. Print package status from the fix plan ────────────────────────────
     - name: Print fix plan package status
       if: steps.lineaje_scan.outputs.post_scan_effective != 'scan_only'
@@ -781,7 +806,7 @@ runs:
       if: inputs.scan_type == 'image' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: patched-dockerfile
+        name: image-patched-dockerfile-${{ env.PROJECT_VERSION }}
         path: ${{ inputs.output_dir }}/Dockerfile*
         if-no-files-found: ignore
 
@@ -790,7 +815,7 @@ runs:
       if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: lineaje-fix-plan
+        name: source-lineaje-fix-plan-${{ env.PROJECT_VERSION }}
         path: |
           ${{ inputs.output_dir }}/pom.xml
           ${{ inputs.output_dir }}/build.gradle
@@ -811,7 +836,7 @@ runs:
       if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat'
       uses: actions/upload-artifact@v4
       with:
-        name: lineaje-raw-fix-plan
+        name: ${{ inputs.scan_type }}-lineaje-raw-fix-plan-${{ env.PROJECT_VERSION }}
         path: ${{ inputs.output_dir }}/raw-fix-plan.json
         if-no-files-found: ignore
 
@@ -822,7 +847,7 @@ runs:
       if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: lineaje-fix-plan
+        name: source-lineaje-fix-plan-gos-${{ env.PROJECT_VERSION }}
         path: |
           ${{ inputs.output_dir }}/fix
           !${{ inputs.output_dir }}/fix/**/node_modules/**
