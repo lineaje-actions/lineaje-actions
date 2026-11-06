@@ -542,6 +542,15 @@ runs:
             SANITIZED_DIR=$(echo "$SOURCE_DIR_INPUT" | sed 's|^\./||' | tr '/' '-')
             SOURCE_DIR_PART="-$SANITIZED_DIR"
           fi
+          
+          # For image scans with metafiles, include sanitized path for uniqueness
+          METAFILES_PART=""
+          if [ "$SCAN_TYPE" = "image" ] && [ -n "$METAFILES_INPUT" ] && [ "$METAFILES_INPUT" != "." ]; then
+            # Sanitize path: remove leading ./ and replace / with - for artifact names
+            SANITIZED_META=$(echo "$METAFILES_INPUT" | sed 's|^\./||' | tr '/' '-')
+            METAFILES_PART="-$SANITIZED_META"
+          fi
+          
           # Only mark as patched if veecli is reused AND this scan type appeared in history
           if [ "$VEECLI_ALREADY_SETUP" = "true" ] && [ -f "$GITHUB_WORKSPACE/.lineaje_previous_scan_types" ]; then
             PREV_TYPES=$(cat "$GITHUB_WORKSPACE/.lineaje_previous_scan_types")
@@ -549,9 +558,9 @@ runs:
             echo "$PREV_TYPES" | tr ',' '\n' | grep -q "^${SCAN_TYPE}$" && SUFFIX="-patched"
           fi
           if [ -n "$VERSION_PREFIX" ]; then
-            write_env PROJECT_VERSION "$VERSION_PREFIX-$BASE$SOURCE_DIR_PART$SUFFIX"
+            write_env PROJECT_VERSION "$VERSION_PREFIX-$BASE$SOURCE_DIR_PART$METAFILES_PART$SUFFIX"
           else
-            write_env PROJECT_VERSION "$BASE$SOURCE_DIR_PART$SUFFIX"
+            write_env PROJECT_VERSION "$BASE$SOURCE_DIR_PART$METAFILES_PART$SUFFIX"
           fi
         fi
         write_env SRC_URL "$SERVER_URL/$REPOSITORY"
