@@ -19,7 +19,8 @@
 # and points fix.yaml's verify-local-files-actions at that copy.
 #
 # Verifies the patched manifest for the selected language under the task
-# directory: requirements.txt through a Python venv, package.json through npm,
+# directory: requirements.txt and pyproject.toml/setup.py through a Python
+# venv, package.json through npm,
 # pom.xml through Maven resolve + test-compile and build.gradle[.kts] through
 # Gradle compileJava + compileTestJava (no test execution — see the java case
 # below), go.mod through `go build ./...`, or .NET project files through
@@ -32,18 +33,18 @@
 #       [--dotnet-bin-dir DIR] [--go-bin-dir DIR] \
 #       [--repo-root DIR] [--connect-to-fortknox true|false]
 #
-# --repo-root (java, go and dotnet) is the original full repository checkout, as
-# opposed to --task-dir, which veecli populates with only the specific file(s)
+# --repo-root (python, java, go and dotnet) is the original full repository
+# checkout, as opposed to --task-dir, which veecli populates with only the file(s)
 # a patch task touches (e.g. just core/pom.xml out of a core+app reactor, or
 # just go.mod out of a module with a local `replace` directive) — not a full
-# copy of the project. A Maven multi-module build needs the parent POM and
-# sibling modules; a Go module with a relative `replace` needs its target; a
-# .NET project needs its ProjectReferences and Directory.*.props — all need
-# the whole tree. When --repo-root is given, these cases reconstruct
-# it: copy --repo-root, then overlay --task-dir's patched file(s) on top at
+# copy of the project. A Python package install needs its source tree; a Maven
+# multi-module build needs the parent POM and sibling modules; a Go module with
+# a relative `replace` needs its target; a .NET project needs its ProjectReferences
+# and Directory.*.props — all need the whole tree. When --repo-root is given,
+# these cases reconstruct it: copy --repo-root, then overlay --task-dir's patched file(s) on top at
 # their same relative paths, and build that. Without --repo-root, they fall
 # back to treating --task-dir as the whole project, same as the python/node
-# cases do — correct only when there's no parent/sibling/replace-path
+# cases do — correct only when there's no source-tree/parent/sibling/replace-path
 # dependency.
 #
 # --connect-to-fortknox false (default true) makes the node case check
@@ -209,7 +210,7 @@ trap cleanup_verify_artifacts EXIT
 # copy --repo-root, then overlay --task-dir's patched file(s) on top at their
 # real relative paths, and build from that instead. Sets BUILD_ROOT. Without
 # --repo-root, falls back to treating --task-dir as the whole project —
-# correct only when there's no parent/sibling/replace-path dependency.
+# correct only when there's no source-tree/parent/sibling/replace-path dependency.
 reconstruct_build_root() {
     if [[ -n "$ORIG_REPO_ROOT" && -d "$ORIG_REPO_ROOT" ]]; then
         BUILD_ROOT="${WORKDIR}/project"
@@ -225,6 +226,8 @@ reconstruct_build_root() {
 
 case "$LANGUAGE" in
     python)
+        reconstruct_build_root
+
         if [[ -f "$PIP_CONFIG" ]]; then
             export PIP_CONFIG_FILE="$PIP_CONFIG"
             unset PIP_EXTRA_INDEX_URL
@@ -243,19 +246,45 @@ case "$LANGUAGE" in
         export PIP_CACHE_DIR="$PIP_CACHE"
         log_info "Using pip cache: ${PIP_CACHE}"
 
-        log_info "Searching recursively for requirements.txt under ${REPO_ROOT}"
+        log_info "Searching recursively for Python manifests under ${BUILD_ROOT}"
         REQUIREMENTS_FILES=()
+        REQUIREMENTS_COUNT=0
         while IFS= read -r file; do
             REQUIREMENTS_FILES+=("$file")
-        done < <(find "${REPO_ROOT}" -type f -name "requirements.txt" 2>/dev/null)
+            REQUIREMENTS_COUNT=$((REQUIREMENTS_COUNT + 1))
+        done < <(find "${BUILD_ROOT}" -type f -name "requirements.txt" 2>/dev/null)
 
-        if [[ "${#REQUIREMENTS_FILES[@]}" -eq 0 ]]; then
-            log_info "No requirements.txt found."
+        PYTHON_PROJECT_DIRS=()
+        PYTHON_PROJECT_COUNT=0
+        while IFS= read -r file; do
+            project_dir="$(dirname "$file")"
+            is_new=1
+            for existing_dir in "${PYTHON_PROJECT_DIRS[@]+"${PYTHON_PROJECT_DIRS[@]}"}"; do
+                if [[ "$existing_dir" = "$project_dir" ]]; then
+                    is_new=0
+                    break
+                fi
+            done
+            if [[ "$is_new" -eq 1 ]]; then
+                PYTHON_PROJECT_DIRS+=("$project_dir")
+                PYTHON_PROJECT_COUNT=$((PYTHON_PROJECT_COUNT + 1))
+            fi
+        done < <(
+            find "${BUILD_ROOT}" \
+                \( -type d \( -name .git -o -name .venv -o -name venv -o -name node_modules -o -name build -o -name dist \) -prune \) -o \
+                -type f \( -name "pyproject.toml" -o -name "setup.py" \) -print 2>/dev/null
+        )
+
+        if [[ "$REQUIREMENTS_COUNT" -eq 0 && "$PYTHON_PROJECT_COUNT" -eq 0 ]]; then
+            log_info "No requirements.txt, pyproject.toml, or setup.py found."
         else
             FOUND_ANY_MANIFEST=1
-            log_info "Found ${#REQUIREMENTS_FILES[@]} requirements.txt file(s):"
-            for f in "${REQUIREMENTS_FILES[@]}"; do
+            log_info "Found ${REQUIREMENTS_COUNT} requirements.txt file(s) and ${PYTHON_PROJECT_COUNT} Python project(s):"
+            for f in "${REQUIREMENTS_FILES[@]+"${REQUIREMENTS_FILES[@]}"}"; do
                 log_info "  - ${f}"
+            done
+            for project_dir in "${PYTHON_PROJECT_DIRS[@]}"; do
+                log_info "  - Python project: ${project_dir}"
             done
 
             VENV_DIR="${WORKDIR}/venv"
@@ -269,7 +298,7 @@ case "$LANGUAGE" in
                 source "${VENV_DIR}/bin/activate"
                 log_info "Virtual environment activated: $(which python3)"
 
-                for req in "${REQUIREMENTS_FILES[@]}"; do
+                for req in "${REQUIREMENTS_FILES[@]+"${REQUIREMENTS_FILES[@]}"}"; do
                     pip_log="${WORKDIR}/pip_install.log"
                     : > "$pip_log"
                     log_info "Running: pip install -r ${req}"
@@ -277,6 +306,19 @@ case "$LANGUAGE" in
                         log_info "pip install succeeded for ${req}"
                     else
                         log_error "pip install FAILED for ${req}. Redacted pip output follows:"
+                        print_redacted_log "$pip_log"
+                        ANY_INSTALL_FAILED=1
+                    fi
+                done
+
+                for project_dir in "${PYTHON_PROJECT_DIRS[@]+"${PYTHON_PROJECT_DIRS[@]}"}"; do
+                    pip_log="${WORKDIR}/pip_install.log"
+                    : > "$pip_log"
+                    log_info "Running: pip install . (project: ${project_dir})"
+                    if (cd "$project_dir" && pip install .) >>"$pip_log" 2>&1; then
+                        log_info "pip install succeeded for Python project ${project_dir}"
+                    else
+                        log_error "pip install FAILED for Python project ${project_dir}. Redacted pip output follows:"
                         print_redacted_log "$pip_log"
                         ANY_INSTALL_FAILED=1
                     fi

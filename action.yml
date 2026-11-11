@@ -84,13 +84,13 @@ inputs:
 
   # ── Post-scan ────────────────────────────────────────────────────────────────
   post_scan:
-    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java, .NET and Go source scans only; checks Fortknox package availability and installation compatibility, then retrieves verified candidate manifests)"
+    description: "scan_only | fix_plan | fix_plan_gos_compat (Python, Node.js, Java, .NET and Go source scans only; verifies candidate manifests, with optional Fortknox support)"
     required: false
     default: "scan_only"
   connect_to_fortknox:
-    description: "[fix_plan_gos_compat only] When false, the compat check only ever suggests publicly available package versions — Lineaje-rebuilt (premium) packages are excluded. Default true."
+    description: "[fix_plan_gos_compat only] Set true to include Lineaje-rebuilt premium candidates and use Fortknox for verification where supported. Default false."
     required: false
-    default: "true"
+    default: "false"
 
   # ── Service endpoint overrides ──────────────────────────────────────────────-
   identity_url:
@@ -143,7 +143,7 @@ outputs:
     description: "Full Lineaje SBOM identifier produced by the scan. Empty if the scan did not produce one."
     value: ${{ steps.lineaje_scan.outputs.sbom_id }}
   ech_count:
-    description: "Combined count of Exploited + Critical + High vulnerabilities (ECH). Zero means the image meets the gold criteria."
+    description: "Combined count of Exploited + Critical + High vulnerabilities (ECH). Check scan warnings before treating zero as a clean result."
     value: ${{ steps.lineaje_scan.outputs.ech_count }}
   premium_only:
     description: "True when a fix plan was produced and every available fix is premium type (no curated fixes). False otherwise."
@@ -203,6 +203,7 @@ runs:
       if: inputs.scan_type == 'source'
       shell: bash
       env:
+        CONNECT_TO_FORTKNOX: ${{ inputs.connect_to_fortknox }}
         LANGUAGE: ${{ inputs.language }}
         LANGUAGE_VERSION: ${{ inputs.language_version }}
         POST_SCAN: ${{ inputs.post_scan }}
@@ -213,6 +214,12 @@ runs:
         fi
         if [ -z "$LANGUAGE_VERSION" ]; then
           echo "[error] 'language_version' input is required for source scan"
+          exit 1
+        fi
+        if [ "$POST_SCAN" = "fix_plan_gos_compat" ] \
+          && [ "$CONNECT_TO_FORTKNOX" != "true" ] \
+          && [ "$CONNECT_TO_FORTKNOX" != "false" ]; then
+          echo "[error] 'connect_to_fortknox' must be 'true' or 'false'"
           exit 1
         fi
         if [ "$POST_SCAN" = "fix_plan_gos_compat" ] \
@@ -494,6 +501,7 @@ runs:
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        PIP_EXTRA_INDEX_URL: ""
       run: |
         python3 -m venv "$ACTION_PATH/.venv"
         source "$ACTION_PATH/.venv/bin/activate"
@@ -703,10 +711,24 @@ runs:
           fi
         fi
 
-        # Parse E+C+H counts and sum them — gold criteria is ECH = 0
-        _E=$(awk '/[[:space:]]Exploited:/{print $NF; exit}' "$SCAN_LOG" 2>/dev/null); _E=${_E:-0}
-        _C=$(awk '/[[:space:]]Critical:/{print $NF; exit}'  "$SCAN_LOG" 2>/dev/null); _C=${_C:-0}
-        _H=$(awk '/[[:space:]]High:/{print $NF; exit}'      "$SCAN_LOG" 2>/dev/null); _H=${_H:-0}
+        # Parse only the dedicated vulnerability summary; fix-plan aggregates
+        # also contain Critical/High labels and are not scan totals.
+        read -r _E _C _H <<< "$(python3 - "$ACTION_PATH" "$SCAN_LOG" <<'PY'
+        import importlib
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, sys.argv[1])
+        parse_summary = importlib.import_module("lineaje_scan_gh").parse_vulnerability_summary
+
+        counts = parse_summary(Path(sys.argv[2]).read_text())
+        if counts is None:
+            print("[warning] Could not parse ECH counts from the vulnerability summary; defaulting to zero", file=sys.stderr)
+            print("0 0 0")
+        else:
+            print(counts["Exploited"], counts["Critical"], counts["High"])
+        PY
+        )"
         ECH_COUNT=$(( _E + _C + _H ))
         echo "ech_count: ${ECH_COUNT}  (Exploited=${_E} Critical=${_C} High=${_H})"
         PREMIUM_ONLY=$(awk '/[[:space:]]Premium only:/{print $NF; exit}' "$SCAN_LOG" 2>/dev/null); PREMIUM_ONLY=${PREMIUM_ONLY:-false}

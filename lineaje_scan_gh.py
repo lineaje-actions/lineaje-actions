@@ -172,6 +172,85 @@ def _step_summary(markdown: str):
         log("warn", f"Could not write step summary: {e}")
 
 
+def _job_component_count(job_result: dict) -> int | None:
+    updates = job_result.get("job_status_updates")
+    if not isinstance(updates, dict):
+        return None
+    value = updates.get("Cli:Total No. of Unique Components discovered")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        value = value.strip()
+        if value.isascii() and value.isdecimal():
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _warn_unconfirmed_vulnerability_summary(
+    attempts: int, total_wait: int, job_result: dict, vuln_data: dict | None,
+    company_id: str, sbom_id: str,
+):
+    log("warn", f"Vulnerability data was not confirmed indexed after {attempts} "
+                f"attempts ({total_wait}s) — the summary below may read as 0 even if the "
+                f"scan actually has findings. Re-check this SBOM later before trusting a "
+                f"clean result.")
+
+    total_hits = vuln_data.get("total_hits") if isinstance(vuln_data, dict) else None
+    if type(total_hits) is not int or total_hits < 0:
+        log("warn", "Could not determine whether the vulnerability summary contains zero records; "
+                    "cannot assess the component-count conditions.")
+        return
+    if total_hits != 0:
+        return
+
+    component_count = _job_component_count(job_result)
+    if component_count is None:
+        log("warn", "Could not determine the unique-component count from the completed job status; "
+                    "cannot assess the component-count conditions.")
+        return
+    if component_count == 0:
+        return
+
+    project_url = (
+        f"https://app.veedna.com/{quote(company_id, safe='')}/"
+        f"SBOM360/projects/{quote(sbom_id, safe='')}/info"
+    )
+    if component_count > 1:
+        message = (
+            f"The scan job reported {component_count} unique components and the vulnerability "
+            f"summary returned no records after {attempts} attempts ({total_wait}s). "
+            "Vulnerability data may still be indexing. Review the project's vulnerability "
+            f"results in the Lineaje Portal ({project_url}) to confirm before treating ECH=0 as clean."
+        )
+        log("warn", message)
+        _step_summary(
+            "## Lineaje scan notice\n\n"
+            f"> **Unconfirmed vulnerability results:** {message}"
+        )
+        return
+
+    message = (
+        "The scan job reported only one unique component and the vulnerability "
+        f"summary returned no records after {attempts} attempts ({total_wait}s). "
+        "This may be valid for a project with no dependencies, but it can also mean "
+        "dependency collection was incomplete. Review the SBOM component and dependency "
+        f"inventory in the Lineaje Portal ({project_url}) before treating ECH=0 as clean."
+    )
+    log("warn", message)
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        escaped_message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::warning title=Lineaje scan may be incomplete::{escaped_message}", flush=True)
+    _step_summary(
+        "## Lineaje scan warning\n\n"
+        f"> **Potentially incomplete scan:** {message}"
+    )
+
+
 # ── Java / Maven / Gradle runtime setup ───────────────────────────────────────
 
 def _detect_arch() -> str:
@@ -313,6 +392,13 @@ def setup_java_runtime(java_version: str):
     log("info", "Java runtime setup complete")
 
 
+def _action_pip_env() -> dict[str, str]:
+    """Keep customer package indexes out of the action's own tooling installs."""
+    env = os.environ.copy()
+    env.pop("PIP_EXTRA_INDEX_URL", None)
+    return env
+
+
 def setup_python_runtime(version: str = ""):
     """Build and install Python from source into /opt/veecli/third_party/linux/.
 
@@ -342,6 +428,7 @@ def setup_python_runtime(version: str = ""):
     # ── 1. System build dependencies ──────────────────────────────────────────
     log("info", "Installing apt build dependencies")
     env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    pip_env = _action_pip_env()
     subprocess.run(["sudo", "apt-get", "update"], check=True, env=env)
     subprocess.run(
         ["sudo", "apt-get", "install", "-y"] + PYTHON_APT_DEPS,
@@ -415,7 +502,7 @@ def setup_python_runtime(version: str = ""):
             log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION} for {binary_name}")
             subprocess.run(
                 [str(python_bin), "-m", "pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
-                check=True,
+                check=True, env=pip_env,
             )
         else:
             log("warn", f"Skipping pipdeptree install — {python_bin} not found")
@@ -426,7 +513,7 @@ def setup_python_runtime(version: str = ""):
     log("info", f"Installing pipdeptree=={PIPDEPTREE_VERSION} into action venv")
     subprocess.run(
         ["pip", "install", f"pipdeptree=={PIPDEPTREE_VERSION}"],
-        check=True,
+        check=True, env=pip_env,
     )
 
     # ── 4. Add installed Python bin dirs to PATH ──────────────────────────────
@@ -1458,7 +1545,52 @@ def print_vulnerability_summary(data: dict) -> int:
     return exploited
 
 
+def parse_vulnerability_summary(log_text: str) -> dict[str, int] | None:
+    """Extract ECH counts only from the dedicated vulnerability-summary block."""
+    in_summary = False
+    separator_seen = False
+    counts: dict[str, int] = {}
+    summary_line = re.compile(
+        r"^\s*(?:\[[^\]]+\]\s*)?\[info\]\s+"
+        r"(Exploited|Critical|High):\s+(\d+)\s*$"
+    )
+    separator_line = re.compile(r"^\s*(?:\[[^\]]+\]\s*)?\[info\]\s*=+\s*$")
+
+    for line in log_text.splitlines():
+        if not in_summary:
+            if "VULNERABILITY SUMMARY" in line:
+                in_summary = True
+            continue
+        if separator_line.match(line):
+            if separator_seen:
+                break
+            separator_seen = True
+            continue
+        if not separator_seen:
+            continue
+
+        match = summary_line.match(line)
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+
+    if set(counts) != {"Exploited", "Critical", "High"}:
+        return None
+    return counts
+
+
 # ── Fix plan ──────────────────────────────────────────────────────────────────
+
+def _is_fortknox_only_fix(plan: dict) -> bool:
+    """Recognize GOS-only candidates by plan metadata or ecosystem version suffix."""
+    plan_type = str(plan.get("type", "")).strip().lower()
+    status = str(plan.get("status", "")).strip().lower()
+    suggested_purl = unquote(str(plan.get("suggested_purl", "")))
+    return (
+        plan_type == "premium"
+        or "premium" in status
+        or re.search(r"[-+]lineaje(?:[-.+]|$)", suggested_purl, re.IGNORECASE) is not None
+    )
+
 
 def _post_explain(gpt_host: str, token: str, sbom_id: str, query: str, guid: str = None,
                   metadata: dict = None) -> dict:
@@ -1734,7 +1866,7 @@ def print_fix_plan(data: dict):
         log("info", f"    Current: {cur_ver}  →  Fix: {fix_ver}")
         if suggested:
             log("info", f"    Suggested purl: {suggested}"
-                        f"{'  [GOS rebuild]' if '-lineaje-' in suggested else ''}")
+                        f"{'  [GOS rebuild]' if _is_fortknox_only_fix(plan) else ''}")
         log("info", f"    Type: {plan.get('type','?')}  Effort: {plan.get('efforts','?')}  Compatible: {plan.get('is_compatible','?')}")
         log("info", f"    Vulns fixed — C:{vc.get('critical',0)} H:{vc.get('high',0)} M:{vc.get('medium',0)} L:{vc.get('low',0)}")
         log("info", f"    CVEs: {', '.join(plan.get('vuln_fixed', []))}")
@@ -1992,7 +2124,7 @@ def write_fix_config(veecli_path: str, token: str = "", gos_mode: str = "observe
         DOTNET_BIN_DIR=_dotnet_bin_dir() if language == "dotnet" else "",
         GRADLE_INSTALL_DIR=_gradle_install_dir() if language == "java" else "",
         GO_BIN_DIR=_go_bin_dir(language_version) if language == "golang" else "",
-        REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"java", "golang", "dotnet"} and repo_root) else "",
+        REPO_ROOT=str(Path(repo_root).resolve()) if (language in {"python", "java", "golang", "dotnet"} and repo_root) else "",
         CONNECT_TO_FORTKNOX=str(connect_to_fortknox).lower(),
         TIMEOUT=timeout_seconds,
     )
@@ -2086,9 +2218,9 @@ def _run_fix_plan(gpt_host: str, token: str, sbom_id: str, output_dir: str,
         # candidate can never resolve there regardless of connect_to_fortknox.
         go_curated_only = gos and language == "golang"
         if gos and (not connect_to_fortknox or go_curated_only):
-            excluded = [p for p in plan_details if "-lineaje-" in p.get("suggested_purl", "")]
+            excluded = [p for p in plan_details if _is_fortknox_only_fix(p)]
             if excluded:
-                plan_details = [p for p in plan_details if "-lineaje-" not in p.get("suggested_purl", "")]
+                plan_details = [p for p in plan_details if not _is_fortknox_only_fix(p)]
                 fix_data.setdefault("meta_data", {})["plan_details"] = plan_details
                 cves = sorted({c for p in excluded for c in p.get("vuln_fixed", [])})
                 log("warn", f"{'Go is curated-only' if go_curated_only else 'connect_to_fortknox=false'}: dropped {len(excluded)} Fortknox-only fix "
@@ -2395,10 +2527,9 @@ def main():
                     time.sleep(VULN_POLL_INTERVAL)
             if not indexed:
                 total_wait = VULN_INITIAL_DELAY + VULN_POLL_INTERVAL * (VULN_MAX_ATTEMPTS - 1)
-                log("warn", f"Vulnerability data was not confirmed indexed after {VULN_MAX_ATTEMPTS} "
-                             f"attempts ({total_wait}s) — the summary below may read as 0 even if the "
-                             f"scan actually has findings. Re-check this SBOM later before trusting a "
-                             f"clean result.")
+                _warn_unconfirmed_vulnerability_summary(
+                    VULN_MAX_ATTEMPTS, total_wait, inner, vuln_data, company_id, sbom_id
+                )
             if vuln_data:
                 exploited_count = print_vulnerability_summary(vuln_data)
         except Exception as e:

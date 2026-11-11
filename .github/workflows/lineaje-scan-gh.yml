@@ -63,6 +63,12 @@ on:
         default: "scan_only"
         type: choice
         options: [scan_only, fix_plan, fix_plan_gos_compat]
+      connect_to_fortknox:
+        description: "Opt in to Fortknox for fix_plan_gos_compat"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
       fast_scan:
         required: false
         default: "true"
@@ -111,5 +117,6 @@ jobs:
           data_service_url:           ${{ vars.LINEAJE_DATA_SERVICE_URL }}
           gpt_service_url:            ${{ vars.LINEAJE_GPT_SERVICE_URL }}
           post_scan:                  ${{ inputs.post_scan }}
+          connect_to_fortknox:        ${{ inputs.connect_to_fortknox }}
           fast_scan:                  ${{ inputs.fast_scan }}
           gos_mode:                   ${{ inputs.gos_mode }}

@@ -72,6 +72,80 @@ def test_node_verifier_propagates_install_failure(verifier, tmp_path):
     assert "One or more dependency installations failed" in result.stdout
 
 
+def run_python_verifier(verifier, tmp_path, *, fail_install=False, repo_root=None):
+    script, fake_bin = verifier
+    python3 = fake_bin / "python3"
+    python3.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${1:-}\" = -m && \"${2:-}\" = venv ]]; then\n"
+        "  mkdir -p \"$3/bin\"\n"
+        "  printf 'deactivate() { :; }\\n' > \"$3/bin/activate\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n"
+    )
+    python3.chmod(0o755)
+    pip = fake_bin / "pip"
+    pip.write_text(
+        "#!/usr/bin/env bash\n"
+        "version=$(grep -m1 '^version = ' pyproject.toml 2>/dev/null || true)\n"
+        "printf '%s|%s|%s\\n' \"$PWD\" \"$*\" \"$version\" >> \"$PIP_CALL_LOG\"\n"
+        "if [[ \"${FAIL_PIP_INSTALL:-false}\" = true ]]; then exit 1; fi\n"
+        "exit 0\n"
+    )
+    pip.chmod(0o755)
+
+    task_dir = tmp_path / "python-task"
+    task_dir.mkdir()
+    (task_dir / "pyproject.toml").write_text(
+        '[project]\nname = "fixture"\nversion = "2.0.0"\n'
+    )
+    call_log = tmp_path / "pip-calls.log"
+    env = {
+        **os.environ,
+        "FAIL_PIP_INSTALL": str(fail_install).lower(),
+        "PIP_CALL_LOG": str(call_log),
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    args = ["bash", str(script), "--task-dir", str(task_dir), "--language", "python"]
+    if repo_root is not None:
+        args.extend(["--repo-root", str(repo_root)])
+    result = subprocess.run(
+        args,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, call_log.read_text() if call_log.exists() else ""
+
+
+def test_python_verifier_installs_pyproject_from_reconstructed_repo(verifier, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text(
+        '[project]\nname = "fixture"\nversion = "1.0.0"\n'
+    )
+    (repo_root / "fixture.py").write_text("value = 1\n")
+
+    result, calls = run_python_verifier(verifier, tmp_path, repo_root=repo_root)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "|install .|" in calls
+    assert "version = \"2.0.0\"" in calls
+    install_dir = Path(calls.split("|", 1)[0])
+    assert (install_dir / "fixture.py").is_file()
+
+
+def test_python_verifier_propagates_pyproject_install_failure(verifier, tmp_path):
+    result, calls = run_python_verifier(verifier, tmp_path, fail_install=True)
+
+    assert result.returncode == 1
+    assert "|install .|" in calls
+    assert "pip install FAILED for Python project" in result.stdout
+    assert "One or more dependency installations failed" in result.stdout
+
+
 def test_go_verifier_explains_newer_standard_library_requirement(verifier, tmp_path):
     script, _fake_bin = verifier
     project = tmp_path / "go-project"
