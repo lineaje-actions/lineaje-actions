@@ -365,7 +365,9 @@ jobs:
 
 | Output | Type | Description |
 |---|---|---|
-| `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether a patched artifact was produced and uploaded. The separate raw fix-plan response does not affect this output. |
+| `fix_artifact_uploaded` | `'true'` \| `'false'` | Whether patched files were detected for upload. The separate raw fix-plan response does not affect this output. Use `fix_artifact_name` to confirm an artifact was uploaded. |
+| `fix_artifact_name` | `string` | Name of the uploaded patched-files artifact. Empty if no patched artifact was uploaded. |
+| `raw_fix_plan_artifact_name` | `string` | Name of the uploaded raw fix-plan artifact. Empty if no raw fix plan was uploaded. |
 | `patched_dockerfile` | `string` | Absolute path to the patched Dockerfile on the runner (image scan + `fix_plan` only). Empty string otherwise. Use directly with `docker build -f`. |
 | `sbom_id` | `string` | Full Lineaje SBOM identifier produced by the scan. Empty if the scan did not produce one. |
 | `ech_count` | `number` | Combined count of Exploited + Critical + High vulnerabilities, parsed only from the dedicated vulnerability-summary block (not fix-plan totals). Missing, unparsable, or unconfirmed summaries can result in zero; check scan warnings and the SBOM component/dependency inventory before treating zero as a clean result. |
@@ -396,27 +398,40 @@ Artifact contents by scan type:
 
 | Scan type | `post_scan` | Artifact name | Files |
 |---|---|---|---|
-| `image` | `fix_plan` | `patched-dockerfile` | Patched `Dockerfile` |
-| `source` | `fix_plan` | `lineaje-fix-plan` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json`, `go.mod`, `go.sum`, `Cargo.toml`, `Cargo.lock` (whichever applies to the project) |
-| image or supported source | `fix_plan` or `fix_plan_gos_compat` | `lineaje-raw-fix-plan` | Complete fix-plan response as `raw-fix-plan.json` |
-| Python, Node.js, Java, .NET, Go or Rust source | `fix_plan_gos_compat` | `lineaje-fix-plan` | Installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved; Fortknox support is optional |
+| `image` | `fix_plan` | `image-patched-dockerfile-<project_version>` | Patched `Dockerfile` |
+| `source` | `fix_plan` | `source-lineaje-fix-plan-<project_version>` | Patched dependency manifest — `pom.xml`, `build.gradle`, `build.gradle.kts`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json`, `go.mod`, `go.sum`, `Cargo.toml`, `Cargo.lock` (whichever applies to the project) |
+| image or supported source | `fix_plan` or `fix_plan_gos_compat` | `<scan_type>-lineaje-raw-fix-plan-<project_version>` | Complete fix-plan response as `raw-fix-plan.json` |
+| supported source | `fix_plan_gos_compat` | `source-lineaje-fix-plan-gos-<project_version>` | Installation-verified candidate manifests under `<output_dir>/fix/`, with the repository layout preserved; Fortknox support is optional |
 
-`lineaje-raw-fix-plan` is uploaded whenever a fix-plan response is received, for both `fix_plan` and `fix_plan_gos_compat`, including responses with no available fixes.
+The project version may be generated dynamically. Use the artifact-name outputs instead of reconstructing the names. The raw fix plan is uploaded whenever a fix-plan response is received, including responses with no available fixes.
 
 Before artifacts are uploaded, the action prints a package-status table to the job log and GitHub job summary. It includes each package's current and suggested coordinates, package type (`curated`, `premium`, or `rebuild`), and availability status.
 
 Treat the raw response as scan data: it can include component details, vulnerability information, and temporary artifact URLs. Access and retention follow the repository's GitHub Actions artifact settings.
 
-Download the raw response later in the same job:
+After a Lineaje step with `id: lineaje`, download either artifact later in the same job:
 
 ```yaml
-- uses: actions/download-artifact@v4
+- name: Download patched files
+  if: steps.lineaje.outputs.fix_artifact_name != ''
+  uses: actions/download-artifact@v4
   with:
-    name: lineaje-raw-fix-plan
+    name: ${{ steps.lineaje.outputs.fix_artifact_name }}
+    path: lineaje-fixes
+
+- name: Download raw fix plan
+  if: steps.lineaje.outputs.raw_fix_plan_artifact_name != ''
+  uses: actions/download-artifact@v4
+  with:
+    name: ${{ steps.lineaje.outputs.raw_fix_plan_artifact_name }}
     path: lineaje-results
 
-- run: jq . lineaje-results/raw-fix-plan.json
+- name: Inspect raw fix plan
+  if: steps.lineaje.outputs.raw_fix_plan_artifact_name != ''
+  run: jq . lineaje-results/raw-fix-plan.json
 ```
+
+For a different job in the same workflow, pass the desired step output through the scan job's `outputs` and reference it via `needs.<job_id>.outputs`.
 
 ---
 
@@ -454,7 +469,7 @@ Notes:
 
 - **Python, Node.js, Java, .NET, Go and Rust source scans only.** Other languages and image scans fail validation up front. Use `fix_plan` for image scans and supported source ecosystems.
 - **Python, Node.js, Java, .NET, Go and Rust candidate manifests are installation-verified before being uploaded.** Python installs discovered `requirements.txt` files and local projects declared by `pyproject.toml` or `setup.py` into a temporary virtual environment. Python project installs use the full repository with patched task files overlaid, so source files needed by the package build are present. Node.js runs `npm install` for discovered `package.json` files using the public npm registry by default, or the generated GOS npm configuration when enabled. Java runs `mvn test-compile` (resolve + compile, no tests) against each project's root `pom.xml` using its normal Maven configuration by default, or the generated GOS settings when enabled, and a disposable local repository; it prefers a project's own `./mvnw` wrapper when present. Gradle projects (`build.gradle`/`build.gradle.kts`) are verified with `compileJava compileTestJava` against each root build, using the project's repositories by default or a generated GOS init script when enabled, a shared Gradle user home, and the project's own `./gradlew` when present (otherwise a bundled Gradle chosen for the JDK). Android builds are skipped with a warning. Go runs `go build -mod=mod ./...` for each patched `go.mod` (module mode with `GOTOOLCHAIN=local`; any `vendor/` is ignored, so re-run `go mod vendor` after applying a patch). Go is curated-only — it never connects to Fortknox, so Lineaje-rebuilt (`-lineaje-N`) candidates are dropped from the plan before submission, whatever `connect_to_fortknox` is set to. .NET runs `dotnet restore` (restore only, no build) for each patched project file — and, when a central `Directory.Packages.props` / `Directory.Build.props` is patched, every project beneath it — using nuget.org by default or the generated GOS NuGet configuration when enabled, and a shared packages cache; locked-mode restore is not used, so a patched version bump is not rejected for disagreeing with an existing `packages.lock.json`. Only the verifier matching the `language` input runs.
-- Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as the `lineaje-fix-plan` artifact. The action does not write them back into the checked-out repository.
+- Verified candidate manifests are written to `<output_dir>/fix/` on the runner and uploaded as an artifact whose name is available from `fix_artifact_name`. The action does not write them back into the checked-out repository.
 - When opting in to Lineaje-rebuilt fixes, point your package manager at the GOS registry at build time — those versions only resolve from there. `gos_mode` controls whether that registry is used in `observe` or `enforce` mode.
 - **`connect_to_fortknox: false` (the default) excludes Lineaje-rebuilt packages.** Premium-plan candidates and recognizable Lineaje build suffixes (including Python's `+lineaje.N`) are dropped before patch tasks are submitted. Set it to `true` to include them where supported. Python verification still uses only the configured pip indexes, and Go remains curated-only.
 

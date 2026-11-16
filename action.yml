@@ -134,8 +134,14 @@ inputs:
 
 outputs:
   fix_artifact_uploaded:
-    description: "Whether a fix plan artifact was produced and uploaded (true/false). Image: patched Dockerfile. Source: pom.xml / requirements.txt / package.json / build.gradle / go.mod / Cargo.toml etc."
+    description: "Whether patched files were detected for upload (true/false). Use fix_artifact_name to confirm an artifact was uploaded."
     value: ${{ steps.lineaje_scan.outputs.fix_artifact_uploaded }}
+  fix_artifact_name:
+    description: "Name of the uploaded patched-files artifact, or empty when no artifact was uploaded."
+    value: ${{ steps.artifact_outputs.outputs.fix_artifact_name }}
+  raw_fix_plan_artifact_name:
+    description: "Name of the uploaded raw fix-plan artifact, or empty when no artifact was uploaded."
+    value: ${{ steps.artifact_outputs.outputs.raw_fix_plan_artifact_name }}
   patched_dockerfile:
     description: "Absolute path to the patched Dockerfile on the runner (image scan + fix_plan only). Empty string otherwise."
     value: ${{ steps.lineaje_scan.outputs.patched_dockerfile }}
@@ -832,21 +838,57 @@ runs:
                     summary.write("| " + " | ".join(markdown(value) for value in row) + " |\n")
         PY
 
+    - name: Prepare artifact names
+      id: artifact_names
+      shell: bash
+      env:
+        SCAN_TYPE: ${{ inputs.scan_type }}
+        PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
+      run: |
+        python3 - <<'PY'
+        import os
+        import uuid
+
+        version = os.environ["PROJECT_VERSION"]
+        scan_type = os.environ["SCAN_TYPE"]
+        names = {
+            "image_fix": f"image-patched-dockerfile-{version}",
+            "source_fix": f"source-lineaje-fix-plan-{version}",
+            "source_gos_fix": f"source-lineaje-fix-plan-gos-{version}",
+            "raw_fix_plan": f"{scan_type}-lineaje-raw-fix-plan-{version}",
+        }
+        # Match the JavaScript trim used by actions/upload-artifact's input reader.
+        trim_chars = (
+            "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
+            + "".join(chr(code) for code in range(0x2000, 0x200b))
+            + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+        )
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            for key, name in names.items():
+                name = name.strip(trim_chars)
+                delimiter = f"LINEAJE_{uuid.uuid4().hex}"
+                while delimiter in name.splitlines():
+                    delimiter = f"LINEAJE_{uuid.uuid4().hex}"
+                output.write(f"{key}<<{delimiter}\n{name}\n{delimiter}\n")
+        PY
+
     # ── 13. Upload fix plan artifact (image scan: patched Dockerfile) ─────────
     - name: Upload patched Dockerfile
+      id: upload_image_fix
       if: inputs.scan_type == 'image' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: image-patched-dockerfile-${{ env.PROJECT_VERSION }}
+        name: ${{ steps.artifact_names.outputs.image_fix }}
         path: ${{ inputs.output_dir }}/Dockerfile*
         if-no-files-found: ignore
 
     # ── 14. Upload fix plan artifact (source scan: pom.xml, requirements.txt, etc.)
     - name: Upload fix plan artifacts
+      id: upload_source_fix
       if: inputs.scan_type == 'source' && steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: source-lineaje-fix-plan-${{ env.PROJECT_VERSION }}
+        name: ${{ steps.artifact_names.outputs.source_fix }}
         path: |
           ${{ inputs.output_dir }}/pom.xml
           ${{ inputs.output_dir }}/build.gradle
@@ -864,10 +906,11 @@ runs:
 
     # ── 15. Upload raw fix plan response (fix_plan, fix_plan_gos_compat)
     - name: Upload raw fix plan
+      id: upload_raw_fix_plan
       if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan' || steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.scan_type }}-lineaje-raw-fix-plan-${{ env.PROJECT_VERSION }}
+        name: ${{ steps.artifact_names.outputs.raw_fix_plan }}
         path: ${{ inputs.output_dir }}/raw-fix-plan.json
         if-no-files-found: ignore
 
@@ -875,13 +918,62 @@ runs:
     # Unlike step 13's fixed filename list, veecli fix mirrors the repo layout into
     # the fix dir, so the whole directory is uploaded.
     - name: Upload GOS fix artifacts
+      id: upload_source_gos_fix
       if: steps.lineaje_scan.outputs.post_scan_effective == 'fix_plan_gos_compat' && steps.lineaje_scan.outputs.fix_artifact_uploaded == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: source-lineaje-fix-plan-gos-${{ env.PROJECT_VERSION }}
+        name: ${{ steps.artifact_names.outputs.source_gos_fix }}
         path: |
           ${{ inputs.output_dir }}/fix
           !${{ inputs.output_dir }}/fix/**/node_modules/**
           !${{ inputs.output_dir }}/fix/**/target/**
           !${{ inputs.output_dir }}/fix/**/obj/**
         if-no-files-found: ignore
+
+    - name: Set artifact outputs
+      id: artifact_outputs
+      shell: bash
+      env:
+        IMAGE_FIX_ID: ${{ steps.upload_image_fix.outputs.artifact-id }}
+        IMAGE_FIX_NAME: ${{ steps.artifact_names.outputs.image_fix }}
+        SOURCE_FIX_ID: ${{ steps.upload_source_fix.outputs.artifact-id }}
+        SOURCE_FIX_NAME: ${{ steps.artifact_names.outputs.source_fix }}
+        SOURCE_GOS_FIX_ID: ${{ steps.upload_source_gos_fix.outputs.artifact-id }}
+        SOURCE_GOS_FIX_NAME: ${{ steps.artifact_names.outputs.source_gos_fix }}
+        RAW_FIX_PLAN_ID: ${{ steps.upload_raw_fix_plan.outputs.artifact-id }}
+        RAW_FIX_PLAN_NAME: ${{ steps.artifact_names.outputs.raw_fix_plan }}
+      run: |
+        write_uploaded_name() {
+          local output_name="$1" artifact_name="$2"
+          if [ -z "$artifact_name" ]; then
+            echo "[error] uploaded artifact name is missing for $output_name" >&2
+            exit 1
+          fi
+          if [[ "$artifact_name" == *$'\n'* || "$artifact_name" == *$'\r'* ]]; then
+            echo "[error] uploaded artifact name contains a line break for $output_name" >&2
+            exit 1
+          fi
+          printf '%s=%s\n' "$output_name" "$artifact_name" >> "$GITHUB_OUTPUT"
+        }
+
+        fix_uploads=0
+        for artifact_id in "$IMAGE_FIX_ID" "$SOURCE_FIX_ID" "$SOURCE_GOS_FIX_ID"; do
+          if [ -n "$artifact_id" ]; then
+            fix_uploads=$((fix_uploads + 1))
+          fi
+        done
+        if [ "$fix_uploads" -gt 1 ]; then
+          echo "[error] multiple patched artifacts were uploaded by one scan" >&2
+          exit 1
+        fi
+
+        if [ -n "$IMAGE_FIX_ID" ]; then
+          write_uploaded_name fix_artifact_name "$IMAGE_FIX_NAME"
+        elif [ -n "$SOURCE_FIX_ID" ]; then
+          write_uploaded_name fix_artifact_name "$SOURCE_FIX_NAME"
+        elif [ -n "$SOURCE_GOS_FIX_ID" ]; then
+          write_uploaded_name fix_artifact_name "$SOURCE_GOS_FIX_NAME"
+        fi
+        if [ -n "$RAW_FIX_PLAN_ID" ]; then
+          write_uploaded_name raw_fix_plan_artifact_name "$RAW_FIX_PLAN_NAME"
+        fi
