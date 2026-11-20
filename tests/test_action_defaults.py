@@ -1,6 +1,9 @@
+import io
 import os
 import re
+import shlex
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -11,10 +14,10 @@ ACTION = ROOT / "action.yml"
 WORKFLOW = ROOT / ".github" / "workflows" / "lineaje-scan-gh.yml"
 
 
-def action_fortknox_default():
+def action_boolean_default(name):
     text = ACTION.read_text()
     match = re.search(
-        r"(?m)^  connect_to_fortknox:\n((?:^    [^\n]*\n)+)", text
+        rf"(?m)^  {re.escape(name)}:\n((?:^    [^\n]*\n)+)", text
     )
     assert match
     default = re.search(r'(?m)^    default: "(true|false)"$', match.group(1))
@@ -85,7 +88,7 @@ def prepare_artifact_names(tmp_path, scan_type, version):
 
 
 def test_fortknox_action_and_manual_workflow_default_to_false():
-    assert action_fortknox_default() == "false"
+    assert action_boolean_default("connect_to_fortknox") == "false"
     text = WORKFLOW.read_text()
     match = re.search(
         r"(?m)^      connect_to_fortknox:\n((?:^        [^\n]*\n)+)", text
@@ -97,6 +100,263 @@ def test_fortknox_action_and_manual_workflow_default_to_false():
         r"(?m)^          connect_to_fortknox:\s+\$\{\{ inputs\.connect_to_fortknox \}\}$",
         text,
     )
+
+
+def test_debug_action_and_manual_workflow_default_to_false():
+    assert action_boolean_default("enable_debug") == "false"
+    assert (
+        "ENABLE_DEBUG: ${{ inputs.enable_debug }}"
+        in action_step_section("Download and extract veecli")
+    )
+    text = WORKFLOW.read_text()
+    match = re.search(r"(?m)^      enable_debug:\n((?:^        [^\n]*\n)+)", text)
+    assert match
+    assert re.search(r'(?m)^        default: "false"$', match.group(1))
+    assert 'options: ["false", "true"]' in match.group(1)
+    assert re.search(
+        r"(?m)^          enable_debug:\s+\$\{\{ inputs\.enable_debug \}\}$", text
+    )
+
+
+def write_cli_archive(path, variant, omitted=()):
+    members = {
+        "veecli": f"{variant} binary\n".encode(),
+        "config-orig.json": f"{variant} config\n".encode(),
+        "pre.sh": b"#!/bin/sh\n",
+    }
+    mode = "w:gz" if variant == "standard" else "w:"
+    with tarfile.open(path, mode) as archive:
+        for name, content in members.items():
+            if name in omitted:
+                continue
+            info = tarfile.TarInfo(f"veecli/{name}")
+            info.mode = 0o644
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+
+
+@pytest.fixture
+def cli_download(tmp_path):
+    archives = {
+        "standard": tmp_path / "standard.tar.gz",
+        "debug": tmp_path / "debug.tar",
+    }
+    for variant, path in archives.items():
+        write_cli_archive(path, variant)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        """#!/bin/bash
+printf '%s\\n' "$2" >> "$MOCK_CURL_LOG"
+if [ "${MOCK_CURL_FAIL:-}" = "true" ]; then
+  echo "mock download failed" >&2
+  exit 22
+fi
+case "$2" in
+  https://downloads.prod.veedna.com/veecli_latest.tar.gz)
+    archive="$MOCK_STANDARD_ARCHIVE"
+    ;;
+  https://downloads.prod.veedna.com/veecli_debug.tar.gz)
+    archive="$MOCK_DEBUG_ARCHIVE"
+    ;;
+  *)
+    echo "unexpected download URL: $2" >&2
+    exit 1
+    ;;
+esac
+[ "$1" = "-fL" ] && [ "$3" = "-o" ] || exit 1
+cp "$archive" "$4"
+"""
+    )
+    curl.chmod(0o755)
+    env_file = tmp_path / "github-env"
+    env_file.write_text("")
+    log = tmp_path / "downloads"
+    log.write_text("")
+    link = tmp_path / "opt" / "veecli"
+    link.parent.mkdir()
+    script = action_step_script("Download and extract veecli")
+    script = script.replace("/opt/veecli", shlex.quote(str(link)))
+    script = script.replace(
+        "/tmp/veecli-extract-XXXXXX",
+        shlex.quote(str(tmp_path / "veecli-extract-XXXXXX")),
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_ENV": str(env_file),
+        "LINEAJE_ACTION_SETUP_COMPLETE": "",
+        "LINEAJE_VEECLI_VARIANT": "",
+        "MOCK_CURL_FAIL": "",
+        "MOCK_CURL_LOG": str(log),
+        "MOCK_DEBUG_ARCHIVE": str(archives["debug"]),
+        "MOCK_STANDARD_ARCHIVE": str(archives["standard"]),
+        "VEECLI_ALREADY_SETUP": "",
+        "VEECLI_PREVIOUSLY_SETUP": "",
+    }
+    return {
+        "archives": archives,
+        "env": env,
+        "env_file": env_file,
+        "link": link,
+        "log": log,
+        "script": script,
+    }
+
+
+def run_cli_download(state, setting):
+    state["env_file"].write_text("")
+    state["env"]["ENABLE_DEBUG"] = setting
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", state["script"]],
+        env=state["env"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    state["env"].update(read_step_outputs(state["env_file"]))
+    return result
+
+
+def finish_cli_setup(state):
+    link = state["link"]
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(Path(state["env"]["VEECLI_PATH"]).parent, target_is_directory=True)
+    state["env"]["LINEAJE_ACTION_SETUP_COMPLETE"] = "true"
+
+
+@pytest.mark.parametrize(
+    ("setting", "variant"),
+    [(None, "standard"), ("false", "standard"), ("true", "debug")],
+)
+def test_download_selects_build_and_extracts_its_archive(cli_download, setting, variant):
+    setting = action_boolean_default("enable_debug") if setting is None else setting
+    result = run_cli_download(cli_download, setting)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    env = cli_download["env"]
+    suffix = "latest" if variant == "standard" else "debug"
+    assert cli_download["log"].read_text().splitlines() == [
+        f"https://downloads.prod.veedna.com/veecli_{suffix}.tar.gz"
+    ]
+    assert env["LINEAJE_VEECLI_VARIANT"] == variant
+    assert env["LINEAJE_ACTION_SETUP_COMPLETE"] == "false"
+    assert env["VEECLI_ALREADY_SETUP"] == "false"
+    assert env["VEECLI_PREVIOUSLY_SETUP"] == "false"
+    binary = Path(env["VEECLI_PATH"])
+    assert binary.read_text() == f"{variant} binary\n"
+    assert os.access(binary, os.X_OK)
+    assert Path(env["CONFIG_ORIG_PATH"]).read_text() == f"{variant} config\n"
+    assert list(binary.parent.parent.glob("veecli.tar*")) == []
+
+
+@pytest.mark.parametrize("setting", ["", "TRUE", "False", "yes", "1"])
+def test_download_rejects_invalid_debug_values(cli_download, setting):
+    result = run_cli_download(cli_download, setting)
+    assert result.returncode != 0
+    assert "'enable_debug' must be 'true' or 'false'" in result.stdout
+    assert cli_download["log"].read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        ["false", "false", "true", "true", "false", "false"],
+        ["true", "true", "false", "true"],
+    ],
+)
+def test_download_reuses_only_matching_builds(cli_download, settings):
+    previous = None
+    expected_downloads = []
+    for setting in settings:
+        variant = "debug" if setting == "true" else "standard"
+        result = run_cli_download(cli_download, setting)
+        assert result.returncode == 0, result.stdout + result.stderr
+        env = cli_download["env"]
+        reused = variant == previous
+        assert env["VEECLI_PREVIOUSLY_SETUP"] == ("false" if previous is None else "true")
+        assert env["VEECLI_ALREADY_SETUP"] == ("true" if reused else "false")
+        assert env["LINEAJE_VEECLI_VARIANT"] == variant
+        assert Path(env["VEECLI_PATH"]).read_text() == f"{variant} binary\n"
+        assert Path(env["CONFIG_ORIG_PATH"]).read_text() == f"{variant} config\n"
+
+        if not reused:
+            assert env["LINEAJE_ACTION_SETUP_COMPLETE"] == "false"
+            expected_downloads.append(
+                f"https://downloads.prod.veedna.com/veecli_{'debug' if setting == 'true' else 'latest'}.tar.gz"
+            )
+            finish_cli_setup(cli_download)
+        assert (cli_download["link"] / "veecli").read_text() == f"{variant} binary\n"
+        previous = variant
+
+    assert cli_download["log"].read_text().splitlines() == expected_downloads
+
+
+@pytest.mark.parametrize("failure", ["download", "corrupt", "missing-binary", "missing-config"])
+def test_failed_build_switch_does_not_leave_setup_marked_complete(cli_download, failure):
+    result = run_cli_download(cli_download, "false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    finish_cli_setup(cli_download)
+    result = run_cli_download(cli_download, "false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert cli_download["env"]["VEECLI_ALREADY_SETUP"] == "true"
+
+    if failure == "download":
+        cli_download["env"]["MOCK_CURL_FAIL"] = "true"
+    elif failure == "corrupt":
+        cli_download["archives"]["debug"].write_bytes(b"not an archive")
+    else:
+        omitted = ("veecli",) if failure == "missing-binary" else ("config-orig.json",)
+        write_cli_archive(cli_download["archives"]["debug"], "debug", omitted)
+
+    result = run_cli_download(cli_download, "true")
+    assert result.returncode != 0
+    expected_error = {
+        "download": "mock download failed",
+        "corrupt": "tar",
+        "missing-binary": "veecli binary not found after extraction",
+        "missing-config": "config-orig.json not found after extraction",
+    }[failure]
+    assert expected_error in result.stdout + result.stderr
+    env = cli_download["env"]
+    assert env["LINEAJE_ACTION_SETUP_COMPLETE"] == "false"
+    assert env["LINEAJE_VEECLI_VARIANT"] == "standard"
+    assert env["VEECLI_ALREADY_SETUP"] == "false"
+    assert env["VEECLI_PREVIOUSLY_SETUP"] == "true"
+    assert (cli_download["link"] / "veecli").read_text() == "standard binary\n"
+
+    cli_download["env"]["MOCK_CURL_FAIL"] = ""
+    write_cli_archive(cli_download["archives"]["debug"], "debug")
+    result = run_cli_download(cli_download, "true")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert env["VEECLI_ALREADY_SETUP"] == "false"
+    assert env["VEECLI_PREVIOUSLY_SETUP"] == "true"
+    assert Path(env["VEECLI_PATH"]).read_text() == "debug binary\n"
+
+
+@pytest.mark.parametrize("state_change", ["unknown-variant", "missing-binary"])
+def test_download_does_not_reuse_unknown_or_missing_build(cli_download, state_change):
+    result = run_cli_download(cli_download, "false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    finish_cli_setup(cli_download)
+    result = run_cli_download(cli_download, "false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert cli_download["env"]["VEECLI_ALREADY_SETUP"] == "true"
+
+    if state_change == "unknown-variant":
+        cli_download["env"]["LINEAJE_VEECLI_VARIANT"] = ""
+    else:
+        Path(cli_download["env"]["VEECLI_PATH"]).unlink()
+
+    result = run_cli_download(cli_download, "false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert cli_download["env"]["VEECLI_ALREADY_SETUP"] == "false"
+    assert cli_download["env"]["VEECLI_PREVIOUSLY_SETUP"] == "true"
+    assert cli_download["env"]["LINEAJE_ACTION_SETUP_COMPLETE"] == "false"
+    assert len(cli_download["log"].read_text().splitlines()) == 2
 
 
 @pytest.mark.parametrize(
@@ -117,7 +377,7 @@ def test_gos_compat_passes_fortknox_setting_to_python(setting, disabled):
     env = {
         **os.environ,
         "EFFECTIVE": "fix_plan_gos_compat",
-        "CONNECT_TO_FORTKNOX": action_fortknox_default() if setting is None else setting,
+        "CONNECT_TO_FORTKNOX": action_boolean_default("connect_to_fortknox") if setting is None else setting,
         "OUTPUT_FIX_DIR": "/tmp/fix",
     }
     result = subprocess.run(
@@ -203,15 +463,22 @@ def test_artifact_names_match_upload_input_trimming(
 
 
 @pytest.mark.parametrize(
-    ("project_version", "version_prefix", "source_dir", "previous_scans", "expected_version"),
+    (
+        "project_version", "version_prefix", "source_dir", "previous_scans",
+        "previously_setup", "already_setup", "expected_version",
+    ),
     [
-        ("", "api", "services/api", "", "api-source-42-2-services-api"),
-        ("custom", "ignored", "services/api", "", "custom"),
-        ("", "", ".", "image,source", "source-42-2-patched"),
+        ("", "api", "services/api", "", False, False, "api-source-42-2-services-api"),
+        ("custom", "ignored", "services/api", "", False, False, "custom"),
+        ("", "", ".", "image,source", True, True, "source-42-2-patched"),
+        ("", "", ".", "image,source", True, False, "source-42-2-patched"),
+        ("", "", ".", "source", False, False, "source-42-2"),
+        ("", "", ".", "image", True, False, "source-42-2"),
     ],
 )
 def test_artifact_names_use_resolved_scan_version(
-    tmp_path, project_version, version_prefix, source_dir, previous_scans, expected_version
+    tmp_path, project_version, version_prefix, source_dir, previous_scans,
+    previously_setup, already_setup, expected_version,
 ):
     env_file = tmp_path / "github-env"
     env_file.write_text("")
@@ -232,7 +499,8 @@ def test_artifact_names_use_resolved_scan_version(
         "SCAN_TYPE": "source",
         "SERVER_URL": "https://github.com",
         "SOURCE_DIR_INPUT": source_dir,
-        "VEECLI_ALREADY_SETUP": "true" if previous_scans else "false",
+        "VEECLI_ALREADY_SETUP": "true" if already_setup else "false",
+        "VEECLI_PREVIOUSLY_SETUP": "true" if previously_setup else "false",
         "VERSION_PREFIX": version_prefix,
     }
     subprocess.run(

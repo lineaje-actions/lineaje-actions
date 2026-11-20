@@ -336,10 +336,21 @@ jobs:
 | `project_version` | no | `<scan_type>-<run_number>-<run_attempt>` | Lineaje project version |
 | `version_prefix` | no | _(none)_ | Short label prepended to the auto-generated version (e.g. `nginx` → `nginx-image-42-1`). Useful when scanning multiple images in one job. |
 | `output_dir` | no | `/tmp/lineaje-scan-output` | Directory where scan output is written; cleared before each invocation. Use distinct paths to retain local output from multiple scans in one job. |
+| `enable_debug` | no | `false` | Download the [debug veecli build](https://downloads.prod.veedna.com/veecli_debug.tar.gz) instead of the standard build. |
 | `post_scan` | no | `scan_only` | `scan_only`, `fix_plan`, or `fix_plan_gos_compat`. The `fix_plan_gos_compat` mode is limited to Python, Node.js, Java, .NET, Go and Rust source scans. See [post_scan modes](#post_scan-modes). |
 | `fast_scan` | no | `true` | Enable fast scan mode. Set to `false` for a deeper but slower scan. |
 | `gos_mode` | no | `observe` | GOS premium registry mode: `observe` or `enforce` |
 | `connect_to_fortknox` | no | `false` | `fix_plan_gos_compat` only — excludes premium/Lineaje-rebuilt candidates by default. Set to `true` to opt in to Fortknox where supported. See [`fix_plan_gos_compat`](#fix_plan_gos_compat). |
+
+To use the debug build for an image or source scan, add:
+
+```yaml
+with:
+  # ... other scan inputs
+  enable_debug: true
+```
+
+The current debug archive contains a Linux x86_64 binary. Repeated action invocations in the same job reuse the CLI when the setting is unchanged; changing it downloads and sets up the selected build again.
 
 ### Image scan inputs
 

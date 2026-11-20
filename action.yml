@@ -45,6 +45,10 @@ inputs:
     description: "Output directory for veecli; cleared before each scan invocation"
     required: false
     default: "/tmp/lineaje-scan-output"
+  enable_debug:
+    description: "Use the debug veecli build instead of the standard build (true | false)"
+    required: false
+    default: "false"
 
   # ── Image scan ──────────────────────────────────────────────────────────────
   image:
@@ -243,19 +247,56 @@ runs:
     # ── 2. Download and extract veecli ────────────────────────────────────────
     - name: Download and extract veecli
       shell: bash
+      env:
+        ENABLE_DEBUG: ${{ inputs.enable_debug }}
       run: |
+        case "$ENABLE_DEBUG" in
+          true)
+            VEECLI_VARIANT="debug"
+            VEECLI_URL="https://downloads.prod.veedna.com/veecli_debug.tar.gz"
+            VEECLI_ARCHIVE="veecli.tar"
+            TAR_FLAGS="-xf"
+            ;;
+          false)
+            VEECLI_VARIANT="standard"
+            VEECLI_URL="https://downloads.prod.veedna.com/veecli_latest.tar.gz"
+            VEECLI_ARCHIVE="veecli.tar.gz"
+            TAR_FLAGS="-xzf"
+            ;;
+          *)
+            echo "[error] 'enable_debug' must be 'true' or 'false'"
+            exit 1
+            ;;
+        esac
+
         # Reuse veecli only after this action completed setup earlier in the same
         # job. Self-hosted runners may retain /opt/veecli across jobs, while the
         # action checkout, virtualenv, and $GITHUB_ENV values do not persist.
-        if [ "${LINEAJE_ACTION_SETUP_COMPLETE:-}" = "true" ] && [ -x /opt/veecli/veecli ]; then
-          echo "VEECLI_ALREADY_SETUP=true" >> "$GITHUB_ENV"
-          echo "VEECLI_PATH=$(realpath /opt/veecli/veecli)" >> "$GITHUB_ENV"
-          exit 0
+        if [ "${LINEAJE_ACTION_SETUP_COMPLETE:-}" = "true" ] \
+          || [ "${VEECLI_PREVIOUSLY_SETUP:-}" = "true" ]; then
+          echo "VEECLI_PREVIOUSLY_SETUP=true" >> "$GITHUB_ENV"
+        else
+          echo "VEECLI_PREVIOUSLY_SETUP=false" >> "$GITHUB_ENV"
         fi
 
+        if [ "${LINEAJE_ACTION_SETUP_COMPLETE:-}" = "true" ] && [ -x /opt/veecli/veecli ]; then
+          if [ "${LINEAJE_VEECLI_VARIANT:-}" = "$VEECLI_VARIANT" ]; then
+            echo "[info] Reusing $VEECLI_VARIANT veecli"
+            echo "VEECLI_ALREADY_SETUP=true" >> "$GITHUB_ENV"
+            echo "VEECLI_PATH=$(realpath /opt/veecli/veecli)" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "[info] Switching to $VEECLI_VARIANT veecli"
+        fi
+
+        echo "VEECLI_ALREADY_SETUP=false" >> "$GITHUB_ENV"
+        echo "LINEAJE_ACTION_SETUP_COMPLETE=false" >> "$GITHUB_ENV"
+        echo "[info] Downloading $VEECLI_VARIANT veecli"
         EXTRACT_DIR=$(mktemp -d /tmp/veecli-extract-XXXXXX)
-        curl -fL https://downloads.prod.veedna.com/veecli_latest.tar.gz -o "$EXTRACT_DIR/veecli.tar.gz"
-        tar -xzf "$EXTRACT_DIR/veecli.tar.gz" -C "$EXTRACT_DIR"
+        curl -fL "$VEECLI_URL" -o "$EXTRACT_DIR/$VEECLI_ARCHIVE"
+        # The debug download is a plain tar despite its .tar.gz URL.
+        tar "$TAR_FLAGS" "$EXTRACT_DIR/$VEECLI_ARCHIVE" -C "$EXTRACT_DIR"
+        rm -f -- "$EXTRACT_DIR/$VEECLI_ARCHIVE"
 
         VEECLI_BIN=$(find "$EXTRACT_DIR" -name 'veecli' -not -name '*.tar.gz' -type f | head -1)
         if [ -z "$VEECLI_BIN" ]; then
@@ -271,6 +312,7 @@ runs:
           exit 1
         fi
         echo "CONFIG_ORIG_PATH=$(realpath "$CONFIG_ORIG")" >> "$GITHUB_ENV"
+        echo "LINEAJE_VEECLI_VARIANT=$VEECLI_VARIANT" >> "$GITHUB_ENV"
 
     # ── 3. Symlink veecli to /opt/veecli ──────────────────────────────────────
     - name: Symlink veecli to /opt/veecli
@@ -565,8 +607,8 @@ runs:
             METAFILES_PART="-$SANITIZED_META"
           fi
           
-          # Only mark as patched if veecli is reused AND this scan type appeared in history
-          if [ "$VEECLI_ALREADY_SETUP" = "true" ] && [ -f "$GITHUB_WORKSPACE/.lineaje_previous_scan_types" ]; then
+          # A variant switch reinstalls veecli but is still a subsequent scan in this job.
+          if [ "$VEECLI_PREVIOUSLY_SETUP" = "true" ] && [ -f "$GITHUB_WORKSPACE/.lineaje_previous_scan_types" ]; then
             PREV_TYPES=$(cat "$GITHUB_WORKSPACE/.lineaje_previous_scan_types")
             # Check if this scan type appeared in the history (comma-separated list)
             echo "$PREV_TYPES" | tr ',' '\n' | grep -q "^${SCAN_TYPE}$" && SUFFIX="-patched"

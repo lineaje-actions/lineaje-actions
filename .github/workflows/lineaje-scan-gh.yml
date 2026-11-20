@@ -74,6 +74,12 @@ on:
         default: "true"
         type: choice
         options: ["true", "false"]
+      enable_debug:
+        description: "Use the debug veecli build"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
       gos_mode:
         required: false
         default: "observe"
@@ -119,4 +125,5 @@ jobs:
           post_scan:                  ${{ inputs.post_scan }}
           connect_to_fortknox:        ${{ inputs.connect_to_fortknox }}
           fast_scan:                  ${{ inputs.fast_scan }}
+          enable_debug:               ${{ inputs.enable_debug }}
           gos_mode:                   ${{ inputs.gos_mode }}
