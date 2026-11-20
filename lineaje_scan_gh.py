@@ -2508,7 +2508,6 @@ def main():
     VULN_MAX_ATTEMPTS = 10
     VULN_POLL_INTERVAL = 15
     VULN_INITIAL_DELAY = 5
-    vuln_data = None
 
     if sbom_id and company_id:
         try:
@@ -2547,14 +2546,6 @@ def main():
         log("info", "Skipping fix plan (--skip-fix-plan)")
     elif not gpt_host:
         log("info", "Skipping fix plan (--gpt-host not provided)")
-    elif _job_component_count(inner) == 1:
-        log("info", "Skipping fix plan (scan reported only one unique component)")
-    elif (
-        isinstance(vuln_data, dict)
-        and type(vuln_data.get("total_hits")) is int
-        and vuln_data["total_hits"] == 0
-    ):
-        log("info", "Skipping fix plan (vulnerability summary reported zero findings)")
     else:
         log("info", f"Requesting fix plan (scan mode: {scan_mode}"
                     f"{', GOS apply + veecli fix' if args.gos_fix_plan else ''})...")
