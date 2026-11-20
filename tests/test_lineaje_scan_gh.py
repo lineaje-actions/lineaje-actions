@@ -559,7 +559,13 @@ def test_write_fix_config_skips_fortknox_files_when_disabled(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(("no_connect", "expected"), [(True, False), (False, True)])
-def test_main_forwards_fortknox_flag_to_fix_plan(tmp_path, monkeypatch, no_connect, expected):
+@pytest.mark.parametrize(
+    ("component_count", "total_hits", "should_request_plan"),
+    [("2", 1, True), ("2", 0, False), ("1", 1, False), ("1", 0, False)],
+)
+def test_main_forwards_fortknox_flag_to_fix_plan(
+    tmp_path, monkeypatch, no_connect, expected, component_count, total_hits, should_request_plan
+):
     veecli_dir = tmp_path / "veecli"
     veecli_dir.mkdir()
     config = tmp_path / "config.json"
@@ -588,9 +594,19 @@ def test_main_forwards_fortknox_flag_to_fix_plan(tmp_path, monkeypatch, no_conne
     monkeypatch.setattr(scan, "run_veecli_source", lambda *_args: "SBOM ID - project-42")
     monkeypatch.setattr(
         scan, "poll_job",
-        lambda *_args: {"result": {"job_status": "Ready for review", "sbom_id": "test-sbom"}},
+        lambda *_args: {
+            "result": {
+                "job_status": "Ready for review",
+                "sbom_id": "test-sbom",
+                "job_status_updates": {
+                    "Cli:Total No. of Unique Components discovered": component_count
+                },
+            }
+        },
     )
-    monkeypatch.setattr(scan, "fetch_vulnerability_summary", lambda *_args: {"total_hits": 1})
+    monkeypatch.setattr(
+        scan, "fetch_vulnerability_summary", lambda *_args: {"total_hits": total_hits}
+    )
     monkeypatch.setattr(scan.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         scan, "_run_fix_plan", lambda *_args, **kwargs: settings.append(kwargs["connect_to_fortknox"])
@@ -598,7 +614,7 @@ def test_main_forwards_fortknox_flag_to_fix_plan(tmp_path, monkeypatch, no_conne
 
     scan.main()
 
-    assert settings == [expected]
+    assert settings == ([expected] if should_request_plan else [])
 
 
 @pytest.mark.parametrize(
